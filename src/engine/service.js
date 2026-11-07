@@ -80,17 +80,59 @@ function pause(ms, signal) {
     signal.addEventListener('abort', abort, { once: true });
   });
 }
-async function attempt(profile, settings, signal, action, work, stopOnTimeout = false) {
+function recordDiagnostic(entry) {
+  return globalThis.chrome?.runtime
+    ?.sendMessage({ channel: 'opao-internal', kind: 'diagnostic', entry })
+    .catch(() => {});
+}
+function errorCode(error) {
+  if (error?.code === 'REQUEST_TIMEOUT') return 'REQUEST_TIMEOUT';
+  if (error?.status) return 'HTTP_ERROR';
+  if (error?.code === 'CANCELLED' || error?.message === '已取消') return 'CANCELLED';
+  return 'REQUEST_FAILED';
+}
+async function attempt(
+  profile,
+  settings,
+  signal,
+  action,
+  work,
+  stopOnTimeout = false,
+  context = {},
+) {
+  context = {
+    ...context,
+    profileName: safeError(profile.name, settings),
+    model: profile.model ? safeError(profile.model, settings) : '',
+  };
   const started = Date.now();
   const keys = keysOf(profile);
   let lastError;
   for (let retry = 0; retry <= profile.retries; retry++) {
+    recordDiagnostic({
+      ...context,
+      event: retry ? 'retry' : 'attempt',
+      profileId: profile.id,
+      action,
+      retry,
+      status: 'START',
+      httpStatus: lastError?.status,
+    });
     if (signal.aborted) throw signal.reason || new Error('已取消');
     const next = keyIndices.get(profile.id) || 0;
     const key = keys.length ? keys[next % keys.length] : '';
     keyIndices.set(profile.id, next + 1);
     try {
       const result = await work(key);
+      recordDiagnostic({
+        ...context,
+        event: 'attempt',
+        profileId: profile.id,
+        action,
+        retry,
+        status: 'PASS',
+        durationMs: Date.now() - started,
+      });
       logs.push({
         at: new Date().toISOString(),
         profile: profile.name,
@@ -102,6 +144,17 @@ async function attempt(profile, settings, signal, action, work, stopOnTimeout = 
       return result;
     } catch (error) {
       lastError = error;
+      recordDiagnostic({
+        ...context,
+        event: 'attempt',
+        profileId: profile.id,
+        action,
+        retry,
+        status: 'FAIL',
+        httpStatus: error.status,
+        code: errorCode(error),
+        durationMs: Date.now() - started,
+      });
       if (
         signal.aborted ||
         (stopOnTimeout && isTimeoutError(error)) ||
@@ -272,6 +325,7 @@ async function translate(settings, payload, signal, emit) {
             emit({ type: 'batch', completed, total: expanded.length });
           },
           payload.stopOnTimeout === true,
+          { page: payload.diagnosticPage, site: payload.diagnosticSite, jobId: payload.jobId },
         ),
       ),
     ),
@@ -290,6 +344,27 @@ export function cancelJob(id, owner) {
 export async function runJob(settings, payload, owner, emit = () => {}) {
   globalLimit = settings.maxConcurrent;
   const id = payload.jobId || crypto.randomUUID();
+  const started = Date.now();
+  const role =
+    payload.kind === 'vision'
+      ? 'vision'
+      : payload.kind === 'transcribe'
+        ? 'asr'
+        : payload.role || 'text';
+  const record = (status, error) =>
+    recordDiagnostic({
+      event: 'request',
+      page: payload.diagnosticPage || owner,
+      site: payload.diagnosticSite,
+      jobId: id,
+      action: payload.kind,
+      profileId:
+        payload.profile?.id || payload.profileId || settings.roles[role] || settings.roles.text,
+      status,
+      httpStatus: error?.status,
+      code: error ? errorCode(error) : undefined,
+      durationMs: Date.now() - started,
+    });
   const existing = jobs.get(id);
   if (existing && existing.owner !== owner) throw new Error('任务标识冲突');
   if (existing) return existing.promise;
@@ -374,13 +449,17 @@ export async function runJob(settings, payload, owner, emit = () => {}) {
           throw new Error('未知翻译任务');
         },
         payload.stopOnTimeout === true,
+        { page: payload.diagnosticPage, site: payload.diagnosticSite, jobId: id },
       ),
     );
   })();
   try {
-    return await job.promise;
+    const result = await job.promise;
+    await record('PASS');
+    return result;
   } catch (error) {
     controller.abort(error);
+    await record('FAIL', error);
     throw error;
   } finally {
     jobs.delete(id);

@@ -55,10 +55,12 @@ async function initialize() {
   const page = new PageTranslator(settings, rules, (message) => ui.notify(message));
   const captions = new CaptionController(settings, ui);
   configurePageRouting(settings, (event) => {
+    rpc('record-diagnostic', {
+      entry: { event: event.type, from: event.from, to: event.to, profileId: event.profileId },
+    }).catch(() => {});
     ui.updatePageService(pageServiceStatus());
     const name = (id) => settings.profiles.find((profile) => profile.id === id)?.name || '服务';
-    if (event.type === 'timeout' && event.to)
-      ui.notify(`“${name(event.from)}”超时，正在尝试“${name(event.to)}”`);
+    if (event.type === 'timeout' && event.to) ui.notifySwitch();
     if (event.type === 'ready' && event.switched)
       ui.notify(`本页已自动切换至“${name(event.profileId)}”`);
   });

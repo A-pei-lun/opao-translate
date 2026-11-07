@@ -6,17 +6,26 @@ import { paragraphElements, PARAGRAPH_SELECTOR } from './paragraphs.js';
 const candidates = PARAGRAPH_SELECTOR;
 const excluded =
   'script,style,noscript,pre,code,textarea,input,select,option,[contenteditable]:not([contenteditable=false]),[translate=no],.notranslate,svg,math,mjx-container,[data-opao-ui],.opao-target';
-function safeQuery(root, selector) {
-  try {
-    return [...root.querySelectorAll(selector)];
-  } catch {
-    return [];
-  }
-}
 function sourceText(element) {
   const clone = element.cloneNode(true);
   for (const node of clone.querySelectorAll('.opao-target,[data-opao-ui]')) node.remove();
   return clone.textContent.replace(/\s+/g, ' ').trim();
+}
+function bottomScrollContainers(element) {
+  const result = [];
+  for (
+    let node = element.parentElement;
+    node && node !== document.body;
+    node = node.parentElement
+  ) {
+    if (
+      /^(auto|scroll)$/.test(getComputedStyle(node).overflowY) &&
+      node.scrollHeight > node.clientHeight &&
+      node.scrollHeight - node.clientHeight - node.scrollTop <= 4
+    )
+      result.push(node);
+  }
+  return result;
 }
 function safeClone(element, deep) {
   const clone = element.cloneNode(deep);
@@ -109,6 +118,7 @@ export class PageTranslator {
     this.notify = notify;
     this.records = new Map();
     this.generatedParagraphs = new Set();
+    this.clippedLinks = new Map();
     this.queue = [];
     this.jobs = new Set();
     this.active = false;
@@ -158,7 +168,13 @@ export class PageTranslator {
       clearTimeout(this.mutationTimer);
       this.mutationTimer = setTimeout(() => this.scan(), 350);
     });
-    observer.observe(root, { childList: true, characterData: true, subtree: true });
+    observer.observe(root, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'open', 'aria-expanded'],
+    });
   }
   applicableRules() {
     return [...this.rules, ...this.settings.siteRules].filter(
@@ -168,16 +184,7 @@ export class PageTranslator {
     );
   }
   root(whole) {
-    if (whole) return document.body;
-    const configured = this.applicableRules().flatMap((rule) =>
-      (rule.mainFrameSelector || []).flatMap((selector) => safeQuery(document, selector)),
-    );
-    if (configured.length)
-      return configured.sort((a, b) => b.textContent.length - a.textContent.length)[0];
-    const areas = [
-      ...document.querySelectorAll('article,main,[role=main],.article-body,.post-content'),
-    ];
-    return areas.sort((a, b) => b.textContent.length - a.textContent.length)[0] || document.body;
+    return document.body;
   }
   collect(root) {
     if (!root) return [];
@@ -199,12 +206,28 @@ export class PageTranslator {
       });
     };
     const preferred = rules.flatMap((rule) => rule.selectors || []);
+    const counts = {
+      event: 'scan',
+      candidates: 0,
+      selected: 0,
+      excluded: 0,
+      short: 0,
+      hidden: 0,
+      oversize: 0,
+    };
     const elements = paragraphElements(root, {
       preferred,
-      additional: rules.flatMap((rule) => rule.additionalSelectors || []),
+      additional: [
+        ...rules.flatMap((rule) => rule.additionalSelectors || []),
+        'nav',
+        'aside',
+        'footer',
+        '[role=navigation]',
+      ],
       excluded: isExcluded,
       generated: this.generatedParagraphs,
       existing: this.records,
+      stats: counts,
     });
     const result = [];
     const textMinimum = rules.reduce(
@@ -218,9 +241,15 @@ export class PageTranslator {
       1,
     );
     for (const element of new Set(elements)) {
-      if (!(element instanceof HTMLElement) || isExcluded(element) || !element.isConnected)
+      counts.candidates++;
+      if (!(element instanceof HTMLElement) || isExcluded(element) || !element.isConnected) {
+        counts.excluded++;
         continue;
-      if (element.querySelector(candidates) && !this.records.has(element)) continue;
+      }
+      if (element.querySelector(candidates) && !this.records.has(element)) {
+        counts.nested = (counts.nested || 0) + 1;
+        continue;
+      }
       const value = sourceText(element);
       if (
         value.length < textMinimum ||
@@ -229,11 +258,23 @@ export class PageTranslator {
           value.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]|[\p{L}\p{N}]+/gu) ||
           []
         ).length < wordMinimum
-      )
+      ) {
+        counts.short++;
         continue;
+      }
       const computed = getComputedStyle(element);
-      if (computed.display === 'none' || computed.visibility === 'hidden') continue;
-      if (value.length > 250000) continue;
+      if (
+        computed.display === 'none' ||
+        computed.visibility === 'hidden' ||
+        (computed.display !== 'contents' && !element.getClientRects().length)
+      ) {
+        counts.hidden++;
+        continue;
+      }
+      if (value.length > 250000) {
+        counts.oversize++;
+        continue;
+      }
       result.push(element);
     }
     for (const element of root.querySelectorAll('*'))
@@ -242,6 +283,8 @@ export class PageTranslator {
         this.addStyle(element.shadowRoot);
         result.push(...this.collect(element.shadowRoot));
       }
+    counts.selected = result.length;
+    rpc('record-diagnostic', { entry: counts }).catch(() => {});
     return result;
   }
   updateStyle(record) {
@@ -263,6 +306,37 @@ export class PageTranslator {
     applyTranslationAppearance(record.target, this.settings);
   }
   makeRecord(element) {
+    const link = element.closest('a');
+    if (link) {
+      for (let node = element; node; node = node.parentElement) {
+        const computed = getComputedStyle(node);
+        if (
+          (/hidden|clip/.test(computed.overflow + computed.overflowY) ||
+            Number.parseInt(computed.webkitLineClamp) > 0) &&
+          !this.clippedLinks.has(node)
+        ) {
+          const properties = [
+            'height',
+            'max-height',
+            'overflow',
+            '-webkit-line-clamp',
+            'white-space',
+          ];
+          const hadStyle = node.hasAttribute('style');
+          const before = properties.map((key) => [
+            key,
+            node.style.getPropertyValue(key),
+            node.style.getPropertyPriority(key),
+          ]);
+          const after = ['auto', 'none', 'visible', 'unset', 'normal'];
+          properties.forEach((key, index) =>
+            node.style.setProperty(key, after[index], 'important'),
+          );
+          this.clippedLinks.set(node, { before, after, hadStyle });
+        }
+        if (node === link) break;
+      }
+    }
     const rich = serializeRich(element);
     const original = sourceText(element);
     const target = document.createElement('span');
@@ -354,9 +428,11 @@ export class PageTranslator {
         const record = records.find((item) => item.id === translated.id);
         if (!record || !record.target.isConnected || sourceText(record.element) !== record.original)
           continue;
+        const atBottom = bottomScrollContainers(record.element);
         record.target.replaceChildren(record.rich.render(translated.text));
         record.target.dataset.state = 'done';
         record.state = 'done';
+        for (const container of atBottom) container.scrollTop = container.scrollHeight;
       }
     } catch (error) {
       if (generation !== this.generation) return;
@@ -404,6 +480,19 @@ export class PageTranslator {
     for (const id of this.jobs) rpc('cancel', { jobId: id }).catch(() => {});
     for (const record of this.records.values()) this.unwrap(record);
     this.records.clear();
+    for (const [node, { before, after, hadStyle }] of this.clippedLinks) {
+      before.forEach(([key, value, priority], index) => {
+        if (
+          node.style.getPropertyValue(key) !== after[index] ||
+          node.style.getPropertyPriority(key) !== 'important'
+        )
+          return;
+        if (value) node.style.setProperty(key, value, priority);
+        else node.style.removeProperty(key);
+      });
+      if (!hadStyle && !node.style.length) node.removeAttribute('style');
+    }
+    this.clippedLinks.clear();
     for (const wrapper of [...this.generatedParagraphs].reverse()) {
       if (wrapper.parentNode) {
         while (wrapper.firstChild) wrapper.before(wrapper.firstChild);

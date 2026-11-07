@@ -958,9 +958,37 @@ function renderRules() {
 async function renderData() {
   const output = el('pre', {
     class: 'code-output',
-    text: '诊断记录只包含服务、操作、耗时和错误摘要。',
+    text: '读取诊断后可按页面筛选，记录包含请求、切换、提醒和扫描统计。',
   });
   const localStatus = el('div', { class: 'status', role: 'status' });
+  const logPage = el(
+    'select',
+    { 'aria-label': '诊断页面' },
+    el('option', { value: '' }, '全部页面'),
+  );
+  let diagnosticRecords = [];
+  const selectedLogs = () =>
+    diagnosticRecords.filter((entry) => !logPage.value || entry.page === logPage.value);
+  const readLogs = async () => {
+    diagnosticRecords = await rpc('logs');
+    const selectedPage = logPage.value;
+    const pages = new Map(
+      diagnosticRecords
+        .filter((entry) => entry.page)
+        .map((entry) => [entry.page, `${entry.site || '扩展内部'} / ${entry.page.slice(0, 12)}`]),
+    );
+    logPage.replaceChildren(
+      el('option', { value: '' }, '全部页面'),
+      ...[...pages].map(([value, label]) => el('option', { value }, label)),
+    );
+    logPage.value = pages.has(selectedPage) ? selectedPage : '';
+    output.textContent = JSON.stringify(selectedLogs(), null, 2);
+    status(localStatus, `显示 ${selectedLogs().length} 条，已保存 ${diagnosticRecords.length} 条`);
+  };
+  logPage.onchange = () => {
+    output.textContent = JSON.stringify(selectedLogs(), null, 2);
+    status(localStatus, `显示 ${selectedLogs().length} 条，已保存 ${diagnosticRecords.length} 条`);
+  };
   const secrets = el('input', { type: 'checkbox' });
   const file = el('input', { type: 'file', accept: '.json,application/json' });
   file.onchange = async () => {
@@ -1036,6 +1064,12 @@ async function renderData() {
       ),
       localStatus,
       el('hr', { class: 'divider' }),
+      el('h3', { text: '运行日志' }),
+      el('p', {
+        class: 'hint',
+        text: '日志保存在扩展本地，最多1000条、保留7天。自动记录服务ID、耗时、错误状态、切换和扫描原因统计。页面用站点和文档编号区分，正文、密钥、请求头及完整网址不写入日志。',
+      }),
+      field('诊断页面', logPage),
       el(
         'div',
         { class: 'button-row' },
@@ -1043,7 +1077,7 @@ async function renderData() {
           text: '读取诊断记录',
           onclick: async () => {
             try {
-              output.textContent = JSON.stringify(await rpc('logs'), null, 2);
+              await readLogs();
             } catch (error) {
               output.textContent = error.message;
             }
@@ -1053,11 +1087,33 @@ async function renderData() {
           text: '导出诊断',
           onclick: async () => {
             try {
+              await readLogs();
               textFile(
-                JSON.stringify(await rpc('logs'), null, 2),
+                JSON.stringify(
+                  {
+                    version: chrome.runtime.getManifest().version,
+                    exportedAt: new Date().toISOString(),
+                    page: logPage.value,
+                    entries: selectedLogs(),
+                  },
+                  null,
+                  2,
+                ),
                 'O泡翻译-诊断.json',
                 'application/json',
               );
+            } catch (error) {
+              status(localStatus, error.message, true);
+            }
+          },
+        }),
+        el('button', {
+          text: '清空全部诊断',
+          onclick: async () => {
+            try {
+              await rpc('clear-logs');
+              await readLogs();
+              status(localStatus, '诊断记录已清空');
             } catch (error) {
               status(localStatus, error.message, true);
             }

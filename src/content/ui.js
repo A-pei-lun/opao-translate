@@ -206,6 +206,9 @@ textarea:focus-visible {
   box-shadow: 0 3px 18px #0003;
   pointer-events: auto;
 }
+.switch-toast { opacity: 0; transition: opacity 180ms ease; z-index: 2; }
+.switch-toast.visible { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .switch-toast { transition: none; } }
 .caption {
   position: fixed;
   bottom: 8%;
@@ -311,6 +314,13 @@ export class ContentUI {
       hidden: '',
     });
     this.toastNode = el('div', { class: 'toast', role: 'status', hidden: '' });
+    this.switchToast = el('div', {
+      class: 'toast switch-toast',
+      role: 'status',
+      'aria-live': 'polite',
+      hidden: '',
+    });
+    this.switchQueue = [];
     this.panel = el('section', {
       class: 'panel',
       hidden: '',
@@ -328,6 +338,7 @@ export class ContentUI {
     this.captionTarget = el('div', { class: 'caption-target' });
     this.caption.append(this.captionOriginal, this.captionTarget);
     this.shadow.append(this.panel, this.bubble, this.caption, this.toastNode, this.pageSettings);
+    this.shadow.append(this.switchToast);
     document.documentElement.append(this.host);
     document.addEventListener(
       'pointerdown',
@@ -346,12 +357,43 @@ export class ContentUI {
     this.refreshPageSettings();
   }
   notify(message) {
+    if (this.switchActive) {
+      rpc('record-diagnostic', { entry: { event: 'toast-suppressed' } }).catch(() => {});
+      return;
+    }
     clearTimeout(this.toastTimer);
     this.toastNode.textContent = message;
     this.toastNode.hidden = false;
     this.toastTimer = setTimeout(() => {
       this.toastNode.hidden = true;
     }, 6500);
+  }
+  notifySwitch() {
+    this.switchQueue.push(1);
+    rpc('record-diagnostic', {
+      entry: { event: 'toast-queued', queued: this.switchQueue.length },
+    }).catch(() => {});
+    if (!this.switchActive) this.showSwitchQueue();
+  }
+  async showSwitchQueue() {
+    this.switchActive = true;
+    clearTimeout(this.toastTimer);
+    this.toastNode.hidden = true;
+    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    while (this.switchQueue.length) {
+      this.switchQueue.shift();
+      this.switchToast.textContent = '提供商服务不可用，正在切换预设';
+      this.switchToast.hidden = false;
+      await pause(20);
+      this.switchToast.classList.add('visible');
+      rpc('record-diagnostic', { entry: { event: 'toast-shown' } }).catch(() => {});
+      await pause(3180);
+      this.switchToast.classList.remove('visible');
+      await pause(180);
+      this.switchToast.hidden = true;
+      rpc('record-diagnostic', { entry: { event: 'toast-hidden' } }).catch(() => {});
+    }
+    this.switchActive = false;
   }
   floating(action) {
     this.onFloatTranslate = action;

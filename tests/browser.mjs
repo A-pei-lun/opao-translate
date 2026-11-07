@@ -125,6 +125,24 @@ const server = http.createServer(async (req, res) => {
     );
     return;
   }
+  if (req.url === '/coverage-page') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(`<!doctype html><html lang="en"><head><title>Navigation coverage</title><style>
+      body{font:16px/1.6 Arial;margin:0;padding:20px 210px}main{min-height:1300px}
+      aside{position:fixed;top:20px;width:170px;height:160px;overflow-y:auto;background:#eef4f7}
+      #left-nav{left:15px}#right-nav{right:15px}aside a{display:block;padding:14px}
+      #bottom-link{display:block;height:24px;max-height:24px;overflow:hidden;white-space:nowrap}
+      #hidden-menu{display:none}
+      </style></head><body><aside id="left-nav">${Array.from({ length: 12 }, (_, i) => `<a id="left-${i}" href="#item-${i}">Left navigation description ${i}</a>`).join('')}</aside>
+      <main><h1>Complete page translation</h1><p>Read this complete paragraph.</p>
+      <div id="mixed-controls">Text before the control <button id="live-button" onclick="window.clickCount=(window.clickCount||0)+1">Expand details</button> text after the control.</div>
+      <div id="hidden-menu"><a id="hidden-link" href="#hidden">Newly opened navigation entry</a></div>
+      <input id="private-input" value="private-input-fixture"><pre id="code-block">const private_code = true;</pre></main>
+      <aside id="right-nav">${Array.from({ length: 12 }, (_, i) => `<a id="right-${i}" href="#item-${i}">Right table of contents ${i}</a>`).join('')}</aside>
+      <footer><a id="bottom-link" href="#next"><span>Creates a model response for the given chat conversation.</span></a></footer>
+      </body></html>`);
+    return;
+  }
   if (req.url === '/image.png') {
     res.writeHead(200, { 'Content-Type': 'image/png' });
     res.end(image);
@@ -812,7 +830,7 @@ try {
     assert.equal(await page.locator('#rich > .opao-target a').getAttribute('href'), '#notes');
     await page.locator('#shadow-host').locator('.opao-target[data-state=done]').waitFor();
     await page.frameLocator('iframe').locator('.opao-target[data-state=done]').waitFor();
-    assert.equal(await page.locator('#outside > .opao-target').count(), 0);
+    await page.locator('#outside > .opao-target[data-state=done]').waitFor();
   });
   await check('dynamic text and SPA follow the active translation state', async () => {
     await page.evaluate(() => window.addDynamic());
@@ -1083,6 +1101,84 @@ try {
     assert.equal(exported.secretsRemoved, true);
     assert.ok(exported.profiles.every((profile) => !profile.apiKey));
   });
+  await check(
+    'normal translation covers independently scrolling navigation, controls and clipped footer links',
+    async () => {
+      const saved = await rpcPage(settingsPage, 'get-settings');
+      const coverageConfig = structuredClone(saved);
+      coverageConfig.lazy = true;
+      await rpcPage(settingsPage, 'save-settings', { settings: coverageConfig });
+      const target = await context.newPage();
+      await target.goto(base + '/coverage-page');
+      await target.locator('opao-reader-ui').waitFor();
+      const original = await target.locator('body').evaluate((body) => {
+        const copy = body.cloneNode(true);
+        copy.querySelector('opao-reader-ui')?.remove();
+        return copy.innerHTML;
+      });
+      const targetAction = async (action) => {
+        await target.bringToFront();
+        return rpcPage(settingsPage, 'tab-action', { action, frameId: 0 });
+      };
+      await targetAction('toggle-page');
+      await target.locator('#left-0 .opao-target[data-state=done]').waitFor();
+      await target.locator('#right-0 .opao-target[data-state=done]').waitFor();
+      await target.locator('#mixed-controls .opao-target[data-state=done]').nth(2).waitFor();
+      await target.locator('#live-button').click();
+      assert.equal(await target.evaluate(() => window.clickCount), 1);
+      assert.equal(await target.locator('#private-input').inputValue(), 'private-input-fixture');
+      assert.equal(await target.locator('#code-block .opao-target').count(), 0);
+      await target.evaluate(() => {
+        for (const id of ['left-nav', 'right-nav']) {
+          const box = document.getElementById(id);
+          box.scrollTop = box.scrollHeight;
+        }
+        document.getElementById('hidden-menu').style.display = 'block';
+        window.scrollTo(0, document.body.scrollHeight);
+      });
+      await target.locator('#left-11 .opao-target[data-state=done]').waitFor();
+      await target.locator('#right-11 .opao-target[data-state=done]').waitFor();
+      const sidebars = await target.evaluate(() =>
+        ['left', 'right'].map((side) => {
+          const box = document.getElementById(side + '-nav').getBoundingClientRect();
+          const translation = document
+            .querySelector('#' + side + '-11 .opao-target')
+            .getBoundingClientRect();
+          return { bottom: box.bottom, translationBottom: translation.bottom };
+        }),
+      );
+      assert.ok(sidebars.every((box) => box.translationBottom <= box.bottom + 1));
+      await target.locator('#bottom-link .opao-target[data-state=done]').waitFor();
+      await target.evaluate(() => document.getElementById('hidden-link').scrollIntoView());
+      await target.locator('#hidden-link .opao-target[data-state=done]').waitFor();
+      const clipped = await target.locator('#bottom-link').evaluate((link) => ({
+        height: link.clientHeight,
+        scroll: link.scrollHeight,
+        overflow: getComputedStyle(link).overflow,
+      }));
+      assert.ok(clipped.height >= clipped.scroll - 1);
+      assert.equal(clipped.overflow, 'visible');
+      await target.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await target.screenshot({
+        path: path.join(evidence, '导航与底部链接补译.png'),
+        fullPage: true,
+        caret: 'initial',
+      });
+      const entries = await rpcPage(settingsPage, 'logs');
+      assert.ok(entries.some((entry) => entry.event === 'scan' && entry.controlsSplit > 0));
+      assert.equal(JSON.stringify(entries).includes('private-input-fixture'), false);
+      await targetAction('restore');
+      const restored = await target.locator('body').evaluate((body) => {
+        const copy = body.cloneNode(true);
+        copy.querySelector('opao-reader-ui')?.remove();
+        copy.querySelector('#hidden-menu').removeAttribute('style');
+        return copy.innerHTML;
+      });
+      assert.equal(restored, original);
+      await target.close();
+      await rpcPage(settingsPage, 'save-settings', { settings: saved });
+    },
+  );
 
   // Isolate the failover scenarios from older active translation pages.
   for (const existingPage of context.pages()) {
@@ -1204,6 +1300,43 @@ try {
       assert.equal((await rpcPage(settingsPage, 'get-settings')).roles.text, 'slow');
     },
   );
+  await check(
+    'every timeout shows a queued fading notice for three seconds despite ordinary messages',
+    async () => {
+      const ui = fallbackPage.locator('opao-reader-ui');
+      const notice = ui.locator('.switch-toast');
+      await notice.waitFor({ state: 'visible' });
+      assert.equal(await notice.textContent(), '提供商服务不可用，正在切换预设');
+      await fallbackAction(fallbackPage, 'notify', { text: 'fixture ordinary progress' });
+      assert.equal(await notice.textContent(), '提供商服务不可用，正在切换预设');
+      await fallbackPage.waitForTimeout(200);
+      await notice.screenshot({ path: path.join(evidence, '超时切换提醒.png') });
+      let entries, pageId;
+      for (let index = 0; index < 50; index++) {
+        entries = await rpcPage(settingsPage, 'logs');
+        pageId ||= entries.findLast(
+          (entry) => entry.event === 'timeout' && entry.from === 'slow',
+        )?.page;
+        if (
+          entries.filter((entry) => entry.page === pageId && entry.event === 'toast-hidden')
+            .length >= 2
+        )
+          break;
+        await fallbackPage.waitForTimeout(200);
+      }
+      const events = entries.filter((entry) => entry.page === pageId);
+      const shown = events.filter((entry) => entry.event === 'toast-shown');
+      const hidden = events.filter((entry) => entry.event === 'toast-hidden');
+      assert.equal(shown.length, 2);
+      assert.equal(hidden.length, 2);
+      for (let index = 0; index < 2; index++) {
+        assert.ok(Date.parse(hidden[index].at) - Date.parse(shown[index].at) >= 3000);
+        if (index) assert.ok(Date.parse(shown[index].at) >= Date.parse(hidden[index - 1].at));
+      }
+      assert.ok(events.some((entry) => entry.event === 'toast-suppressed'));
+      await notice.waitFor({ state: 'hidden' });
+    },
+  );
   await check('SPA URL changes reset the page selection to its configured primary', async () => {
     fallbackBehaviors.delete('fixture-fallback-slow');
     const start = apiCalls.length;
@@ -1286,6 +1419,44 @@ try {
       await target.locator('#fallback-image[data-opao-translated=true]').waitFor();
       assert.deepEqual(modelsSince(start), ['fixture-fallback-slow', 'fixture-fallback-ready']);
       await target.close();
+    },
+  );
+  await check(
+    'persistent diagnostic UI filters, exports, survives runtime recreation and clears',
+    async () => {
+      const before = await rpcPage(settingsPage, 'logs');
+      assert.ok(before.some((entry) => entry.event === 'request' && entry.jobId && entry.page));
+      assert.ok(before.some((entry) => entry.code === 'REQUEST_TIMEOUT'));
+      await worker.evaluate(async () => {
+        if (await chrome.offscreen.hasDocument()) await chrome.offscreen.closeDocument();
+      });
+      const after = await rpcPage(settingsPage, 'logs');
+      assert.ok(
+        after.some((entry) => entry.at === before[0].at && entry.event === before[0].event),
+      );
+      await settingsPage.getByRole('button', { name: '数据与诊断', exact: true }).click();
+      await settingsPage.getByRole('button', { name: '读取诊断记录', exact: true }).click();
+      const selectedPage = after.find((entry) => entry.site === base && entry.page)?.page;
+      assert.ok(selectedPage);
+      await settingsPage.getByLabel('诊断页面', { exact: true }).selectOption(selectedPage);
+      const filtered = JSON.parse(await settingsPage.locator('.code-output').textContent());
+      assert.ok(filtered.length > 0 && filtered.every((entry) => entry.page === selectedPage));
+      const download = settingsPage.waitForEvent('download');
+      await settingsPage.getByRole('button', { name: '导出诊断', exact: true }).click();
+      const exportedPath = path.join(evidence, '导出-诊断.json');
+      await (await download).saveAs(exportedPath);
+      const exported = JSON.parse(await fs.readFile(exportedPath, 'utf8'));
+      assert.equal(exported.version, version);
+      assert.ok(exported.entries.every((entry) => entry.page === selectedPage));
+      assert.ok(!JSON.stringify(exported).includes('fixture-test-key'));
+      assert.ok(!JSON.stringify(exported).includes('private-input-fixture'));
+      await settingsPage.screenshot({
+        path: path.join(evidence, '持久日志与页面筛选.png'),
+        fullPage: true,
+      });
+      await settingsPage.getByRole('button', { name: '清空全部诊断', exact: true }).click();
+      await settingsPage.getByText('诊断记录已清空', { exact: true }).waitFor();
+      assert.deepEqual(await rpcPage(settingsPage, 'logs'), []);
     },
   );
 } catch (error) {

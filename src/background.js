@@ -11,6 +11,8 @@ import {
 import { normalizeFloatingPosition } from './shared/appearance.js';
 
 let runtimeCreation;
+import { createDiagnosticStore } from './shared/diagnostics.js';
+const diagnosticStore = createDiagnosticStore(chrome.storage.local);
 let mutation = Promise.resolve();
 let siteRules;
 let imageRuleId = 10000;
@@ -311,6 +313,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.channel === 'opao-internal') {
     if (sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('runtime.html'))
       return false;
+    if (message.kind === 'diagnostic') {
+      diagnosticStore.append(message.entry).then(
+        () => sendResponse({ ok: true }),
+        () => sendResponse({ ok: false }),
+      );
+      return true;
+    }
     if (message.kind === 'progress') {
       const data = { channel: 'opao-progress', jobId: message.jobId, ...message.data };
       const match = /^tab:(\d+):(\d+)$/.exec(message.owner);
@@ -326,6 +335,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.channel !== 'opao' || sender.id !== chrome.runtime.id) return false;
   const privileged = trustedPage(sender);
   const publicMethods = [
+    'record-diagnostic',
     'get-public-settings',
     'get-site-rules',
     'get-floating-position',
@@ -348,6 +358,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   (async () => {
     const owner = ownerOf(sender);
+    if (message.kind === 'record-diagnostic') {
+      let site = '';
+      try {
+        site = new URL(sender.url).origin;
+      } catch {}
+      await diagnosticStore.append(message.entry, { page: sender.documentId || owner, site });
+      return true;
+    }
+    if (message.kind === 'logs') return diagnosticStore.read(message.page || '');
+    if (message.kind === 'clear-logs') {
+      await diagnosticStore.clear();
+      return true;
+    }
     if (message.kind === 'get-public-settings') return publicSettings(await settings());
     if (message.kind === 'get-floating-position') {
       const value = await chrome.storage.local.get(FLOATING_POSITION_KEY);
@@ -512,6 +535,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       if (payload.profile)
         payload.profile = normalizeSettings({ profiles: [payload.profile] }).profiles[0];
+      payload.diagnosticPage = sender.documentId || owner;
+      try {
+        payload.diagnosticSite = new URL(sender.url).origin;
+      } catch {
+        payload.diagnosticSite = '';
+      }
       return runtime(payload, owner, config);
     }
     throw new Error('未知扩展操作');

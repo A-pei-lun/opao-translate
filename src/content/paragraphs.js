@@ -59,12 +59,17 @@ function isParagraphBreak(node) {
 }
 export function paragraphElements(
   root,
-  { preferred = [], additional = [], excluded, generated, existing },
+  { preferred = [], additional = [], excluded, generated, existing, stats = {} },
 ) {
   const displays = new WeakMap();
   const display = (element) => {
     if (!displays.has(element)) displays.set(element, getComputedStyle(element).display);
     return displays.get(element);
+  };
+  const skipped = (element) => {
+    const result = excluded(element);
+    if (result) stats.excluded = (stats.excluded || 0) + 1;
+    return result;
   };
   const inlineLayout = (element) =>
     /flex|grid/.test(display(element)) &&
@@ -73,7 +78,8 @@ export function paragraphElements(
     );
   const isBoundary = (node) => {
     if (node.nodeType !== Node.ELEMENT_NODE || node.tagName === 'BR') return false;
-    if (node.matches('[data-opao-ui],.opao-target,' + controls)) return true;
+    if (node.matches('[data-opao-ui],.opao-target,' + controls) || node.querySelector(controls))
+      return true;
     if (node.matches('code,kbd,math,svg,mjx-container')) return false;
     return (
       node.matches(PARAGRAPH_SELECTOR) ||
@@ -100,6 +106,7 @@ export function paragraphElements(
         continue;
       }
       if (!['inline', 'contents'].includes(display(element))) return element;
+      if (element.matches('a,button')) return element;
       element = parent;
     }
     return null;
@@ -123,7 +130,7 @@ export function paragraphElements(
         !walker.currentNode.textContent.trim() ||
         parent.closest(PARAGRAPH_SELECTOR) ||
         parent.closest('.opao-source') ||
-        excluded(parent)
+        skipped(parent)
       )
         continue;
       const element = nearest(parent);
@@ -159,6 +166,15 @@ export function paragraphElements(
     for (const node of [...container.childNodes]) {
       if (isBoundary(node) || isParagraphBreak(node)) {
         flush();
+        if (
+          node.nodeType === Node.ELEMENT_NODE &&
+          !excluded(node) &&
+          !node.matches(
+            'input,textarea,select,[contenteditable]:not([contenteditable=false]),' +
+              PARAGRAPH_SELECTOR,
+          )
+        )
+          wrapRuns(node);
         continue;
       }
       if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.ELEMENT_NODE) run.push(node);
@@ -174,8 +190,12 @@ export function paragraphElements(
       elements.push(element);
       continue;
     }
-    if (!(element instanceof HTMLElement) || excluded(element) || element.querySelector(controls))
+    if (!(element instanceof HTMLElement) || skipped(element)) continue;
+    if (element.querySelector(controls)) {
+      stats.controlsSplit = (stats.controlsSplit || 0) + 1;
+      wrapRuns(element);
       continue;
+    }
     const meaningful = [...element.childNodes].filter(
       (node) =>
         !(node.nodeType === Node.TEXT_NODE && !node.textContent.trim()) &&
