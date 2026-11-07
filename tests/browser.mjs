@@ -87,6 +87,7 @@ await fs.writeFile(path.join(evidence, 'fixture.wav'), wav);
 const apiCalls = [],
   browserErrors = [],
   requests = [];
+const fallbackBehaviors = new Map();
 function json(response, data, status = 200) {
   response.writeHead(status, {
     'Content-Type': 'application/json',
@@ -115,6 +116,13 @@ const server = http.createServer(async (req, res) => {
   if (req.url === '/frame') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end('<html><body><p id="frame-text">Hello frame reader</p></body></html>');
+    return;
+  }
+  if (req.url.startsWith('/fallback-page')) {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(
+      '<!doctype html><html lang="en"><head><title>Fallback fixture</title></head><body><main><p id="fallback-text">A paragraph for provider switching.</p><div id="fallback-dynamic"></div><img id="fallback-image" src="/image.png" width="480" height="240"></main></body></html>',
+    );
     return;
   }
   if (req.url === '/image.png') {
@@ -168,6 +176,18 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   apiCalls.at(-1).model = body.model || '';
+  const behavior = fallbackBehaviors.get(body.model);
+  if (behavior === 'timeout') {
+    const call = apiCalls.at(-1);
+    res.on('close', () => {
+      call.aborted = true;
+    });
+    return;
+  }
+  if (typeof behavior === 'number') {
+    json(res, { error: { message: 'controlled provider error' } }, behavior);
+    return;
+  }
   const content =
     body.messages?.at(-1)?.content || body.input?.[0]?.content || body.contents?.[0]?.parts || '';
   const hasImage =
@@ -233,6 +253,7 @@ const checks = [];
 let context;
 async function check(name, work) {
   const started = Date.now();
+  console.log('RUN ' + name);
   try {
     await work();
     checks.push({ name, status: 'PASS', durationMs: Date.now() - started });
@@ -244,7 +265,23 @@ async function check(name, work) {
 }
 async function rpcPage(page, kind, payload = {}) {
   const result = await page.evaluate(
-    ({ kind, payload }) => chrome.runtime.sendMessage({ channel: 'opao', kind, ...payload }),
+    ({ kind, payload }) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error('Test RPC deadline exceeded: ' + kind)),
+          35000,
+        );
+        chrome.runtime.sendMessage({ channel: 'opao', kind, ...payload }).then(
+          (result) => {
+            clearTimeout(timer);
+            resolve(result);
+          },
+          (error) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        );
+      }),
     { kind, payload },
   );
   if (!result?.ok) throw new Error(result?.error || 'RPC failed');
@@ -320,7 +357,20 @@ try {
   await settingsPage.reload();
   await settingsPage.getByRole('button', { name: '保存设置', exact: true }).waitFor();
   await check('settings normal save and repeated edit', async () => {
-    await settingsPage.getByLabel('服务名称', { exact: true }).fill('本地模拟接口');
+    await settingsPage.getByLabel('自定义服务名称', { exact: true }).fill('本地模拟接口');
+    assert.match(
+      await settingsPage
+        .getByLabel('网页与文本', { exact: true })
+        .locator('option:checked')
+        .textContent(),
+      /本地模拟接口/,
+    );
+    await settingsPage.getByLabel('快速填入接口模板', { exact: true }).selectOption('openai');
+    assert.equal(
+      await settingsPage.getByLabel('自定义服务名称', { exact: true }).inputValue(),
+      '本地模拟接口',
+    );
+    await settingsPage.getByLabel('API 地址', { exact: true }).fill(base + '/v1');
     await settingsPage.getByRole('button', { name: '保存设置', exact: true }).click();
     await settingsPage.getByText('设置已保存', { exact: true }).waitFor();
     await settingsPage.getByLabel('模型 ID', { exact: true }).fill('fixture-text-edited');
@@ -328,7 +378,77 @@ try {
     await settingsPage.getByText('设置已保存', { exact: true }).waitFor();
     const config = await rpcPage(settingsPage, 'get-settings');
     assert.equal(config.profiles[0].model, 'fixture-text-edited');
+    assert.equal(config.profiles[0].name, '本地模拟接口');
+    await settingsPage.reload();
+    await settingsPage.getByLabel('自定义服务名称', { exact: true }).waitFor();
+    assert.match(
+      await settingsPage
+        .getByLabel('网页与文本', { exact: true })
+        .locator('option:checked')
+        .textContent(),
+      /本地模拟接口/,
+    );
   });
+  await check(
+    'fallback defaults off and ordered custom service names persist in the settings UI',
+    async () => {
+      const toggle = settingsPage.getByRole('checkbox', {
+        name: '服务超时后自动切换',
+        exact: true,
+      });
+      assert.equal(await toggle.isChecked(), false);
+      await settingsPage.getByRole('button', { name: '上移 备选模拟接口', exact: true }).click();
+      assert.equal(
+        await settingsPage.locator('.fallback-order li').first().getAttribute('data-profile-id'),
+        'second',
+      );
+      assert.deepEqual(
+        await settingsPage
+          .locator('.fallback-settings')
+          .evaluate((node) =>
+            [...node.childNodes]
+              .filter((child) => child.nodeType === Node.TEXT_NODE && child.textContent.trim())
+              .map((child) => child.textContent),
+          ),
+        [],
+      );
+      await toggle.check();
+      await settingsPage.getByRole('button', { name: '保存设置', exact: true }).click();
+      await settingsPage.getByText('设置已保存', { exact: true }).waitFor();
+      await settingsPage.reload();
+      assert.equal(await toggle.isChecked(), true);
+      assert.equal(
+        await settingsPage.locator('.fallback-order li').first().getAttribute('data-profile-id'),
+        'second',
+      );
+      await settingsPage.screenshot({
+        path: path.join(evidence, '自定义名称与切换顺序-浅色.png'),
+        fullPage: true,
+      });
+      const config = await rpcPage(settingsPage, 'get-settings');
+      assert.equal(config.serviceFallback.order[0], 'second');
+      config.theme = 'dark';
+      await rpcPage(settingsPage, 'save-settings', { settings: config });
+      await settingsPage.reload();
+      await settingsPage.screenshot({
+        path: path.join(evidence, '自定义名称与切换顺序-深色.png'),
+        fullPage: true,
+      });
+      await settingsPage.setViewportSize({ width: 390, height: 900 });
+      assert.ok(
+        await settingsPage.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),
+      );
+      await settingsPage.screenshot({
+        path: path.join(evidence, '自定义名称与切换顺序-窄屏.png'),
+        fullPage: true,
+      });
+      await settingsPage.setViewportSize({ width: 1280, height: 900 });
+      config.theme = 'system';
+      config.serviceFallback.enabled = false;
+      await rpcPage(settingsPage, 'save-settings', { settings: config });
+      await settingsPage.reload();
+    },
+  );
   await check('model discovery without an API key', async () => {
     const models = await rpcPage(settingsPage, 'models', { profileId: 'main' });
     assert.equal(models.length, 3);
@@ -963,11 +1083,217 @@ try {
     assert.equal(exported.secretsRemoved, true);
     assert.ok(exported.profiles.every((profile) => !profile.apiKey));
   });
+
+  // Isolate the failover scenarios from older active translation pages.
+  for (const existingPage of context.pages()) {
+    console.log('CLEANUP CANDIDATE ' + existingPage.url());
+    if (
+      existingPage.url().startsWith(base + '/') ||
+      [origin + '/workspace.html', origin + '/popup.html'].includes(existingPage.url())
+    )
+      await existingPage.close();
+  }
+  const fallbackConfig = normalizeSettings({
+    profiles: [
+      {
+        ...createProfile('slow'),
+        name: '主力中转站',
+        model: 'fixture-fallback-slow',
+        baseUrl: base + '/v1',
+        timeout: 5,
+        retries: 0,
+        capabilities: { text: true, vision: true, asr: false },
+      },
+      {
+        ...createProfile('gateway'),
+        name: '备用一号站',
+        model: 'fixture-fallback-gateway',
+        baseUrl: base + '/v1',
+        timeout: 5,
+        retries: 2,
+      },
+      {
+        ...createProfile('ready'),
+        name: '备用二号站',
+        model: 'fixture-fallback-ready',
+        baseUrl: base + '/v1',
+        timeout: 5,
+        retries: 2,
+        capabilities: { text: true, vision: true, asr: false },
+      },
+    ],
+    roles: { text: 'slow', vision: 'slow' },
+    lazy: false,
+    cache: false,
+    serviceFallback: { enabled: false, order: ['slow', 'gateway', 'ready'] },
+  });
+  const modelsSince = (index) =>
+    apiCalls
+      .slice(index)
+      .filter((call) => call.model?.startsWith('fixture-fallback-'))
+      .map((call) => call.model);
+  let fallbackPage;
+  async function openFallbackPage() {
+    const value = await context.newPage();
+    await value.goto(base + '/fallback-page');
+    await value.locator('opao-reader-ui').waitFor();
+    return value;
+  }
+  async function fallbackAction(page, action, payload = {}) {
+    await page.bringToFront();
+    return rpcPage(settingsPage, 'tab-action', { action, payload, frameId: 0 });
+  }
+  await check(
+    'disabled fallback does not contact backups after a real five-second timeout',
+    async () => {
+      fallbackBehaviors.set('fixture-fallback-slow', 'timeout');
+      fallbackBehaviors.set('fixture-fallback-gateway', 504);
+      await rpcPage(settingsPage, 'save-settings', { settings: fallbackConfig });
+      fallbackPage = await openFallbackPage();
+      const start = apiCalls.length;
+      await fallbackAction(fallbackPage, 'toggle-page');
+      await fallbackPage
+        .locator('#fallback-text > .opao-target[data-state=error]')
+        .waitFor({ timeout: 10000 });
+      assert.deepEqual(modelsSince(start), ['fixture-fallback-slow']);
+      await fallbackPage.close();
+    },
+  );
+  await check(
+    'real timeout and HTTP 504 follow the configured order without same-provider retries',
+    async () => {
+      fallbackConfig.serviceFallback.enabled = true;
+      fallbackConfig.profiles[0].retries = 2;
+      await rpcPage(settingsPage, 'save-settings', { settings: fallbackConfig });
+      fallbackPage = await openFallbackPage();
+      const start = apiCalls.length,
+        started = Date.now();
+      await fallbackAction(fallbackPage, 'toggle-page');
+      await fallbackPage
+        .locator('#fallback-text > .opao-target[data-state=done]')
+        .waitFor({ timeout: 14000 });
+      assert.deepEqual(modelsSince(start), [
+        'fixture-fallback-slow',
+        'fixture-fallback-gateway',
+        'fixture-fallback-ready',
+      ]);
+      assert.ok(Date.now() - started < 14000);
+      assert.equal((await rpcPage(settingsPage, 'get-settings')).roles.text, 'slow');
+      const ui = fallbackPage.locator('opao-reader-ui');
+      await ui.getByRole('button', { name: '切换网页双语翻译', exact: true }).hover();
+      await ui.getByRole('button', { name: '打开页内设置', exact: true }).click();
+      await ui.getByText('本页实际服务 备用二号站（自动切换）', { exact: true }).waitFor();
+      await ui
+        .locator('.page-settings')
+        .screenshot({ path: path.join(evidence, '超时切换后页内服务.png') });
+      await ui.getByRole('button', { name: '关闭页内设置', exact: true }).click();
+    },
+  );
+  await check(
+    'new paragraphs reuse the available page provider and keep the saved default untouched',
+    async () => {
+      const start = apiCalls.length;
+      await fallbackPage.evaluate(() => {
+        const p = document.createElement('p');
+        p.id = 'fallback-added';
+        p.textContent = 'A later paragraph uses the same working service.';
+        document.querySelector('#fallback-dynamic').append(p);
+      });
+      await fallbackPage.locator('#fallback-added > .opao-target[data-state=done]').waitFor();
+      assert.deepEqual(modelsSince(start), ['fixture-fallback-ready']);
+      assert.equal((await rpcPage(settingsPage, 'get-settings')).roles.text, 'slow');
+    },
+  );
+  await check('SPA URL changes reset the page selection to its configured primary', async () => {
+    fallbackBehaviors.delete('fixture-fallback-slow');
+    const start = apiCalls.length;
+    await fallbackPage.evaluate(() => {
+      history.pushState({}, '', '/fallback-page?spa=two');
+      const p = document.createElement('p');
+      p.id = 'spa-new';
+      p.textContent = 'A new route starts from the preferred provider.';
+      document.querySelector('#fallback-dynamic').append(p);
+    });
+    await fallbackPage.locator('#spa-new > .opao-target[data-state=done]').waitFor();
+    await fallbackPage.waitForTimeout(850);
+    assert.ok(modelsSince(start).length > 0);
+    assert.ok(modelsSince(start).every((model) => model === 'fixture-fallback-slow'));
+  });
+  await check(
+    'a new tab and a reload restart independently without inheriting the old page provider',
+    async () => {
+      fallbackBehaviors.set('fixture-fallback-slow', 504);
+      await fallbackPage.evaluate(() => {
+        const p = document.createElement('p');
+        p.id = 'sticky-again';
+        p.textContent = 'Switch this page again before testing navigation.';
+        document.querySelector('#fallback-dynamic').append(p);
+      });
+      await fallbackPage.locator('#sticky-again > .opao-target[data-state=done]').waitFor();
+      fallbackBehaviors.delete('fixture-fallback-slow');
+      const another = await openFallbackPage();
+      let start = apiCalls.length;
+      await fallbackAction(another, 'toggle-page');
+      await another.locator('#fallback-text > .opao-target[data-state=done]').waitFor();
+      assert.deepEqual(modelsSince(start), ['fixture-fallback-slow']);
+      await another.close();
+      start = apiCalls.length;
+      await fallbackPage.reload();
+      await fallbackPage.locator('opao-reader-ui').waitFor();
+      await fallbackAction(fallbackPage, 'toggle-page');
+      await fallbackPage.locator('#fallback-text > .opao-target[data-state=done]').waitFor();
+      assert.deepEqual(modelsSince(start), ['fixture-fallback-slow']);
+      await fallbackPage.close();
+    },
+  );
+  await check('HTTP 401 does not silently switch to another provider', async () => {
+    fallbackBehaviors.set('fixture-fallback-slow', 401);
+    const target = await openFallbackPage();
+    const start = apiCalls.length;
+    await fallbackAction(target, 'toggle-page');
+    await target.locator('#fallback-text > .opao-target[data-state=error]').waitFor();
+    assert.deepEqual(modelsSince(start), ['fixture-fallback-slow']);
+    assert.match(await target.locator('#fallback-text > .opao-target').textContent(), /401/);
+    await target.close();
+  });
+  await check(
+    'restoring the page cancels a pending timeout without starting a backup',
+    async () => {
+      fallbackBehaviors.set('fixture-fallback-slow', 'timeout');
+      const target = await openFallbackPage();
+      const start = apiCalls.length;
+      await fallbackAction(target, 'toggle-page');
+      for (let index = 0; index < 100 && !modelsSince(start).length; index++)
+        await target.waitForTimeout(20);
+      assert.equal(modelsSince(start).length, 1);
+      const pending = apiCalls.findLast((call) => call.model === 'fixture-fallback-slow');
+      await fallbackAction(target, 'restore');
+      for (let index = 0; index < 100 && !pending.aborted; index++) await target.waitForTimeout(20);
+      assert.equal(pending.aborted, true);
+      await target.waitForTimeout(150);
+      assert.deepEqual(modelsSince(start), ['fixture-fallback-slow']);
+      assert.equal(await target.locator('.opao-target').count(), 0);
+      await target.close();
+    },
+  );
+  await check(
+    'image timeout skips text-only backups and uses a compatible visual provider',
+    async () => {
+      fallbackBehaviors.set('fixture-fallback-slow', 504);
+      const target = await openFallbackPage();
+      const start = apiCalls.length;
+      await fallbackAction(target, 'translate-image', { src: base + '/image.png' });
+      await target.locator('#fallback-image[data-opao-translated=true]').waitFor();
+      assert.deepEqual(modelsSince(start), ['fixture-fallback-slow', 'fixture-fallback-ready']);
+      await target.close();
+    },
+  );
 } catch (error) {
   checks.push({ name: 'browser initialization', status: 'FAIL', error: error.stack });
   console.log(error.stack);
 } finally {
   if (context) await context.close();
+  server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
   const report = {
     date: new Date().toISOString(),

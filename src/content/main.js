@@ -1,4 +1,11 @@
-import { rpc, translateItems, jobId } from '../shared/client.js';
+import {
+  rpc,
+  translateItems,
+  jobId,
+  configurePageRouting,
+  resetPageRouting,
+  pageServiceStatus,
+} from '../shared/client.js';
 import { matchesUrl } from '../shared/config.js';
 import { imageCanvas, translateImage } from '../shared/images.js';
 import { PageTranslator } from './dom.js';
@@ -47,6 +54,15 @@ async function initialize() {
   const ui = new ContentUI(settings);
   const page = new PageTranslator(settings, rules, (message) => ui.notify(message));
   const captions = new CaptionController(settings, ui);
+  configurePageRouting(settings, (event) => {
+    ui.updatePageService(pageServiceStatus());
+    const name = (id) => settings.profiles.find((profile) => profile.id === id)?.name || '服务';
+    if (event.type === 'timeout' && event.to)
+      ui.notify(`“${name(event.from)}”超时，正在尝试“${name(event.to)}”`);
+    if (event.type === 'ready' && event.switched)
+      ui.notify(`本页已自动切换至“${name(event.profileId)}”`);
+  });
+  window.addEventListener('pagehide', () => resetPageRouting());
   const imageStates = new Map();
   let focused,
     selectedText = '',
@@ -407,6 +423,7 @@ async function initialize() {
     if (lastUrl === location.href) return;
     const wasActive = page.active;
     lastUrl = location.href;
+    resetPageRouting();
     page.restore();
     captions.cues = [];
     captions.cache.clear();
@@ -431,6 +448,7 @@ async function initialize() {
     update(next, translationChanged = true) {
       settings = next;
       ui.update(next);
+      configurePageRouting(next, undefined, translationChanged);
       captions.update(next, translationChanged);
       page.update(next, translationChanged);
     },

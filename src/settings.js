@@ -18,6 +18,7 @@ const notice = el('div', { class: 'status', role: 'status', 'aria-live': 'polite
 const main = el('main', { class: 'settings-main', id: 'settings-main' });
 const nav = el('nav', { class: 'sidebar', 'aria-label': '设置分类' });
 const rolesArea = el('div', { class: 'roles' });
+const fallbackArea = el('section', { class: 'fallback-settings', 'aria-label': '超时自动切换' });
 function dirty() {
   status(notice, '有未保存的修改');
 }
@@ -163,6 +164,102 @@ function renderRoles() {
       }),
     ),
   );
+  renderFallback();
+}
+function renderFallback() {
+  const fallback = settings.serviceFallback;
+  const ordered = fallback.order
+    .map((id) => settings.profiles.find((profile) => profile.id === id))
+    .filter(
+      (profile) =>
+        profile &&
+        profile.protocol !== 'asr' &&
+        (profile.capabilities.text || profile.capabilities.vision),
+    );
+  const state = el('span', {
+    class: 'tag',
+    text: fallback.enabled ? '已开启，仅记忆当前页面' : '未启用',
+  });
+  const toggle = check('服务超时后自动切换', fallback, 'enabled', () => {
+    state.textContent = fallback.enabled ? '已开启，仅记忆当前页面' : '未启用';
+  });
+  const move = (profile, offset) => {
+    const index = ordered.indexOf(profile);
+    const other = ordered[index + offset];
+    if (!other) return;
+    const a = fallback.order.indexOf(profile.id);
+    const b = fallback.order.indexOf(other.id);
+    [fallback.order[a], fallback.order[b]] = [fallback.order[b], fallback.order[a]];
+    dirty();
+    renderFallback();
+    const buttons = [...fallbackArea.querySelectorAll('button')];
+    buttons
+      .find(
+        (button) =>
+          button.dataset.profileId === profile.id &&
+          button.dataset.direction === String(offset) &&
+          !button.disabled,
+      )
+      ?.focus();
+  };
+  fallbackArea.replaceChildren(
+    el('div', { class: 'fallback-heading' }, el('h3', { text: '超时自动切换' }), state),
+    toggle,
+    el('p', {
+      class: 'hint',
+      text: '先用当前场景选定的服务，超时后按下列顺序尝试其余服务。成功后本页继续使用它，刷新或进入其他页面时重置。默认关闭。',
+    }),
+    el(
+      'ol',
+      { class: 'fallback-order', 'aria-label': '备用服务顺序' },
+      ...ordered.map((profile, index) => {
+        const ready =
+          profile.enabled &&
+          profile.baseUrl &&
+          (profile.model || TRADITIONAL_PROTOCOLS.includes(profile.protocol));
+        return el(
+          'li',
+          { 'data-profile-id': profile.id },
+          el('span', { class: 'fallback-rank', 'aria-hidden': 'true', text: String(index + 1) }),
+          el(
+            'div',
+            { class: 'fallback-label' },
+            el('strong', { text: profile.name.trim() || '未命名服务' }),
+            el('span', {
+              class: 'hint',
+              text:
+                (profile.model || '模型待填写') +
+                (!profile.enabled ? '（未启用，自动跳过）' : !ready ? '（未配置，自动跳过）' : ''),
+            }),
+          ),
+          el(
+            'div',
+            { class: 'fallback-actions' },
+            ...[
+              [-1, '上移'],
+              [1, '下移'],
+            ].map(([offset, text]) =>
+              el('button', {
+                text,
+                'aria-label': `${text} ${profile.name}`,
+                'data-profile-id': profile.id,
+                'data-direction': String(offset),
+                disabled: index + offset < 0 || index + offset >= ordered.length,
+                onclick: () => move(profile, offset),
+              }),
+            ),
+          ),
+        );
+      }),
+    ),
+    ...(!ordered.length
+      ? [el('p', { class: 'hint', text: '添加文本或视觉服务后，可在这里安排备用顺序。' })]
+      : []),
+    el('p', {
+      class: 'hint',
+      text: '只在超时时切换，跳过停用、未配置及能力不匹配的服务。超时直接尝试下一项；关闭后按原服务的重试设置执行。图片仅使用支持视觉的备用服务。',
+    }),
+  );
 }
 function renderServices() {
   renderRoles();
@@ -193,8 +290,9 @@ function renderServices() {
         text: '添加服务',
         onclick: () => {
           const profile = createProfile();
-          profile.name = '新服务';
+          profile.name = `新服务 ${settings.profiles.length + 1}`;
           settings.profiles.push(profile);
+          settings.serviceFallback.order.push(profile.id);
           selected = profile.id;
           if (!settings.roles.text) settings.roles.text = profile.id;
           dirty();
@@ -216,6 +314,13 @@ function renderServices() {
       list: 'available-models',
       placeholder: '填写模型 ID，或点击获取模型列表',
     });
+    model.oninput = () => {
+      profile.model = model.value;
+      dirty();
+      const currentModel = list.querySelector('[aria-pressed=true] small');
+      if (currentModel) currentModel.textContent = profile.model || '模型待填写';
+      renderRoles();
+    };
     const apiKey = inputFor(profile, 'apiKey', 'password', {
       autocomplete: 'off',
       'aria-label': 'API Key',
@@ -279,16 +384,28 @@ function renderServices() {
       };
       if (!presets[template.value]) return;
       [profile.protocol, profile.baseUrl] = presets[template.value];
-      profile.name = templates.find((item) => item[0] === template.value)[1];
+      if (
+        !profile.name.trim() ||
+        profile.name === '自定义接口' ||
+        /^新服务(?: \d+)?$/.test(profile.name)
+      )
+        profile.name = templates.find((item) => item[0] === template.value)[1];
       dirty();
+      renderRoles();
       draw();
     };
-    const nameInput = inputFor(profile, 'name');
+    const nameInput = inputFor(profile, 'name', 'text', {
+      required: true,
+      maxlength: 100,
+      placeholder: '例如 豆腐中转（主力）、备用站（便宜）',
+    });
     nameInput.oninput = () => {
       profile.name = nameInput.value;
+      nameInput.setCustomValidity(profile.name.trim() ? '' : '请填写可辨识的服务名称');
       dirty();
       const selectedButton = list.querySelector('[aria-pressed=true] strong');
-      if (selectedButton) selectedButton.textContent = profile.name;
+      if (selectedButton) selectedButton.textContent = profile.name.trim() || '未命名服务';
+      renderRoles();
     };
     form.replaceChildren(
       el(
@@ -301,7 +418,7 @@ function renderServices() {
       el(
         'div',
         { class: 'grid-two' },
-        field('服务名称', nameInput),
+        field('自定义服务名称', nameInput, '填写中转站或用途，列表和服务选择框都会显示这个名称。'),
         field(
           '接口协议',
           selectFor(profile, 'protocol', Object.entries(PROTOCOLS), () => {
@@ -444,6 +561,9 @@ function renderServices() {
           text: '移除此服务',
           onclick: () => {
             settings.profiles = settings.profiles.filter((value) => value !== profile);
+            settings.serviceFallback.order = settings.serviceFallback.order.filter(
+              (id) => id !== profile.id,
+            );
             for (const key of Object.keys(settings.roles))
               if (settings.roles[key] === profile.id) settings.roles[key] = '';
             for (const key of [...invalid.keys()])
@@ -460,7 +580,7 @@ function renderServices() {
   draw();
   main.replaceChildren(
     header('服务与模型', '把你的接口留在自己的控制之下。网页、图片和语音可以使用不同服务。'),
-    el('div', { class: 'stack' }, rolesArea, board),
+    el('div', { class: 'stack' }, rolesArea, fallbackArea, board),
   );
 }
 function renderReading() {

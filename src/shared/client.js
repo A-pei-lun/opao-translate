@@ -1,9 +1,32 @@
+import { PageServiceRouter } from './failover.js';
+
+let pageRouter;
+export function configurePageRouting(settings, onChange, forceReset = false) {
+  pageRouter ||= new PageServiceRouter(rawRpc, () => location.href, onChange);
+  pageRouter.configure(settings, forceReset);
+}
+export function resetPageRouting() {
+  pageRouter?.reset();
+}
+export function pageServiceStatus() {
+  return pageRouter?.status();
+}
 export function rpc(kind, payload = {}) {
+  if (kind === 'cancel') pageRouter?.cancel(payload.jobId);
+  if (pageRouter && ['translate', 'vision'].includes(kind)) return pageRouter.run(kind, payload);
+  return rawRpc(kind, payload);
+}
+function rawRpc(kind, payload = {}) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ channel: 'opao', kind, ...payload }, (response) => {
       if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
       if (!response?.ok)
-        return reject(new Error(response?.error || '扩展请求未返回结果，请重新打开页面'));
+        return reject(
+          Object.assign(new Error(response?.error || '扩展请求未返回结果，请重新打开页面'), {
+            code: response?.code,
+            status: response?.status,
+          }),
+        );
       resolve(response.data);
     });
   });
@@ -27,6 +50,7 @@ export async function translateItems(
     sourceLanguage,
     context = '',
     domain = '',
+    fallback = true,
     jobId: id = jobId(),
   } = {},
 ) {
@@ -38,6 +62,7 @@ export async function translateItems(
     sourceLanguage,
     context,
     domain,
+    fallback,
     jobId: id,
   });
 }

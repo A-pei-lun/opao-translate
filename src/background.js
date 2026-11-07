@@ -119,7 +119,11 @@ async function runtime(payload, owner, config) {
     owner,
     settings: config || (await settings()),
   });
-  if (!response?.ok) throw new Error(response?.error || '翻译运行时未返回结果');
+  if (!response?.ok)
+    throw Object.assign(new Error(response?.error || '翻译运行时未返回结果'), {
+      code: response?.code,
+      status: response?.status,
+    });
   return response.data;
 }
 function trustedPage(sender) {
@@ -513,7 +517,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     throw new Error('未知扩展操作');
   })().then(
     (data) => sendResponse({ ok: true, data }),
-    (error) => sendResponse({ ok: false, error: error.message || '操作失败' }),
+    (error) =>
+      sendResponse({
+        ok: false,
+        error: error.message || '操作失败',
+        code: error.code,
+        status: error.status,
+      }),
   );
   return true;
 });

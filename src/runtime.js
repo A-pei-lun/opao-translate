@@ -41,7 +41,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     .then(
       (data) => sendResponse({ ok: true, data }),
       (error) =>
-        sendResponse({ ok: false, error: safeError(error, message.settings || { profiles: [] }) }),
+        sendResponse({
+          ok: false,
+          error: safeError(error, message.settings || { profiles: [] }),
+          code: error.code,
+          status: error.status,
+        }),
     )
     .finally(() => {
       active--;

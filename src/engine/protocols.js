@@ -294,7 +294,9 @@ export async function request(
     }
   } catch (error) {
     if (controller.signal.aborted && !signal?.aborted)
-      throw new Error('请求超时，请增大超时或减小单批文本');
+      throw Object.assign(new Error('请求超时，请增大超时或减小单批文本'), {
+        code: 'REQUEST_TIMEOUT',
+      });
     throw error;
   } finally {
     clearTimeout(timer);

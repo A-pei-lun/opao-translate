@@ -7,6 +7,7 @@ import { chromium } from 'playwright-core';
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const project = path.dirname(source);
 const version = JSON.parse(await fs.readFile(path.join(source, 'manifest.json'), 'utf8')).version;
+const fromVersion = '0.1.1';
 if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Invalid upgrade version');
 const evidence = path.resolve(project, '04_验证', version);
 const profile = path.join(evidence, '升级测试配置');
@@ -61,10 +62,10 @@ async function rpc(page, kind, fields = {}) {
   return response.data;
 }
 let context;
-const result = { from: '0.1.0', to: version, status: 'FAIL' };
+const result = { from: fromVersion, to: version, status: 'FAIL' };
 try {
-  context = await launch(path.join(project, '05_构建产物/O泡翻译-0.1.0'));
-  const oldWorker = await workerFor(context, '0.1.0');
+  context = await launch(path.join(project, '05_构建产物', 'O泡翻译-' + fromVersion));
+  const oldWorker = await workerFor(context, fromVersion);
   const oldId = new URL(oldWorker.url()).host;
   const page = await context.newPage();
   await page.goto('chrome-extension://' + oldId + '/settings.html');
@@ -74,7 +75,7 @@ try {
       profiles: [
         {
           id: 'legacy',
-          name: '升级前服务',
+          name: '我的旧中转站',
           protocol: 'chat',
           baseUrl: 'http://127.0.0.1:9/v1',
           model: 'upgrade-model',
@@ -104,6 +105,9 @@ try {
   assert.equal(settings.roles.text, 'legacy');
   assert.equal(settings.profiles[0].apiKey, 'upgrade-fixture-key');
   assert.equal(settings.profiles[0].model, 'upgrade-model');
+  assert.equal(settings.profiles[0].name, '我的旧中转站');
+  assert.equal(settings.serviceFallback.enabled, false);
+  assert.deepEqual(settings.serviceFallback.order, ['legacy']);
   assert.equal(settings.translationStyle, 'soft');
   assert.equal(settings.textSize, 118);
   assert.equal(settings.translationFont, '');
@@ -115,6 +119,9 @@ try {
     keyRetained: true,
     explicitStyleRetained: true,
     newAppearanceDefaults: true,
+    customNameRetained: true,
+    fallbackDefaultDisabled: true,
+    fallbackOrderMigrated: true,
     explicitExtensionReload: true,
   });
 } catch (error) {

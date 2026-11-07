@@ -426,6 +426,16 @@ export class ContentUI {
     service.disabled = this.pageSaving || !profiles.length;
     this.pageTranslate.disabled = this.pageSaving || !service.value;
     if (!this.pageSaving) this.refreshPageState();
+    this.updatePageService(this.pageService);
+  }
+  updatePageService(value) {
+    this.pageService = value;
+    if (!this.pageServiceNote) return;
+    this.pageServiceNote.hidden = !value?.enabled;
+    const profile = this.settings.profiles.find((profile) => profile.id === value?.profileId);
+    this.pageServiceNote.textContent = value?.exhausted
+      ? '本页备用服务均已超时，可手动更换服务后重试'
+      : `本页实际服务 ${profile?.name || '尚未选择'}${value?.profileId !== value?.preferredId ? '（自动切换）' : ''}`;
   }
   togglePageSettings() {
     if (!this.pageSettings.hidden) {
@@ -455,6 +465,11 @@ export class ContentUI {
         translationStyle: makeSelect('页内译文样式', TRANSLATION_STYLES),
       };
       this.pageResult = el('div', { class: 'settings-result', role: 'status' });
+      this.pageServiceNote = el('div', {
+        class: 'settings-result',
+        'aria-live': 'polite',
+        hidden: true,
+      });
       for (const [key, field] of Object.entries(this.pageFields))
         field.onchange = async () => {
           if (this.pageSaving) return;
@@ -513,6 +528,7 @@ export class ContentUI {
             label('目标语言', this.pageFields.targetLanguage),
           ),
           label('翻译服务', this.pageFields.profileId),
+          this.pageServiceNote,
           el(
             'div',
             { class: 'page-settings-row' },
@@ -686,6 +702,7 @@ export class ContentUI {
                 await translateItems([{ id: 'selection', text: input.value }], {
                   jobId: id,
                   profileId,
+                  fallback: !comparison,
                   role,
                   targetLanguage,
                   sourceLanguage: this.settings.sourceLanguage,

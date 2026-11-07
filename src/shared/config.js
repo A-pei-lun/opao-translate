@@ -96,6 +96,7 @@ export function defaults() {
     imageFont: 'Microsoft YaHei',
     asrChunkSeconds: 12,
     comparisonProfiles: [],
+    serviceFallback: { enabled: false, order: [] },
     prompt: '',
   };
 }
@@ -129,7 +130,7 @@ export function normalizeSettings(raw = {}) {
     seen.add(initial.id);
     return {
       ...initial,
-      name: text(profile.name, initial.name, 100),
+      name: text(profile.name, initial.name, 100).trim() || initial.name,
       protocol: Object.hasOwn(PROTOCOLS, profile.protocol) ? profile.protocol : 'chat',
       endpointMode: profile.endpointMode === 'exact' ? 'exact' : 'auto',
       baseUrl: text(profile.baseUrl, '', 4000).trim(),
@@ -166,6 +167,18 @@ export function normalizeSettings(raw = {}) {
     };
   });
   const next = { ...base, profiles };
+  const profileIds = new Set(profiles.map((profile) => profile.id));
+  next.serviceFallback = {
+    enabled: data.serviceFallback?.enabled === true,
+    order: [
+      ...new Set([
+        ...array(data.serviceFallback?.order).filter(
+          (id) => typeof id === 'string' && profileIds.has(id),
+        ),
+        ...profileIds,
+      ]),
+    ],
+  };
   for (const key of ['theme', 'mode', 'translationStyle', 'hoverModifier', 'imageRender'])
     next[key] = text(data[key], base[key], 40);
   for (const key of [
@@ -261,7 +274,13 @@ export function translationSettingsChanged(previous, next) {
         'blockSites',
         'translateTitle',
         'lazy',
-      ].map((key) => [key, settings[key]]),
+        'serviceFallback',
+      ].map((key) => [
+        key,
+        key === 'profiles'
+          ? settings.profiles.map(({ name, ...profile }) => profile)
+          : settings[key],
+      ]),
     );
   return JSON.stringify(inputs(previous)) !== JSON.stringify(inputs(next));
 }
