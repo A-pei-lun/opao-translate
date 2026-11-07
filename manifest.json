@@ -1,0 +1,92 @@
+{
+  "manifest_version": 3,
+  "name": "O泡翻译",
+  "version": "0.1.0",
+  "description": "个人自用双语翻译，支持网页、图片、文档、字幕及自定义模型接口。",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "contextMenus",
+    "sidePanel",
+    "offscreen",
+    "tabCapture",
+    "declarativeNetRequestWithHostAccess"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "O泡翻译"
+  },
+  "options_page": "settings.html",
+  "side_panel": {
+    "default_path": "workspace.html?panel=1"
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file:///*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["subtitle-hook.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    }
+  ],
+  "commands": {
+    "toggle-page": {
+      "suggested_key": {
+        "default": "Alt+A"
+      },
+      "description": "切换网页双语翻译"
+    },
+    "whole-page": {
+      "suggested_key": {
+        "default": "Alt+W"
+      },
+      "description": "翻译整个页面"
+    },
+    "translate-input": {
+      "suggested_key": {
+        "default": "Alt+I"
+      },
+      "description": "翻译当前输入框"
+    },
+    "open-panel": {
+      "suggested_key": {
+        "default": "Alt+S"
+      },
+      "description": "打开翻译工作台"
+    },
+    "only-translation": {
+      "description": "切换纯译文"
+    },
+    "toggle-subtitles": {
+      "description": "切换视频双语字幕"
+    },
+    "toggle-mask": {
+      "description": "切换译文遮罩"
+    }
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAy1dc5sXeAZsOjhL3eqHW4ILnWiYKz9LQ1NCwa3MhpMj9AizRd1vB8JwqeeNUKmtF7C1pKEAqUG70Nhf3NaIxq3m4udEwXBY2Gtke47t/OMYiOfY4y1hhNMzMsVgJ3kgae/PyvXW3BsyFvwBlaLMXcsaogomhHYMnKPr7+m6sThcptk9Ne4b/BPXUvmVHePSdWDFZJGU647gKOtpL6eDJMJOW5fMGSKy7ZyRUIICPDFWk+qMz/hxrojJPdEIuDs1/k0fsU7tpFr+Sp+q73LpoXRqYHYXAGKlemUWvsTC4YkbxHvz9duEpKFXxdHGZEglYgG8jnSoHuQaVo6I1nvgYwwIDAQAB"
+}
