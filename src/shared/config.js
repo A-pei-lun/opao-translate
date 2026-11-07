@@ -1,4 +1,6 @@
+import { TRANSLATION_STYLES, cleanFontFamily } from './appearance.js';
 export const CONFIG_KEY = 'opao.settings.v1';
+export const FLOATING_POSITION_KEY = 'opao.floating.position.v1';
 export const PROTOCOLS = {
   chat: 'OpenAI Chat Completions',
   responses: 'OpenAI Responses',
@@ -63,7 +65,11 @@ export function defaults() {
     mode: 'bilingual',
     textSize: 100,
     translationColor: '',
-    translationStyle: 'line',
+    translationStyle: 'muted',
+    translationFont: '',
+    translationFontWeight: 'inherit',
+    translationLineHeight: 1.8,
+    translationParagraphGap: 0.65,
     hover: true,
     hoverModifier: 'Alt',
     selection: true,
@@ -225,7 +231,39 @@ export function normalizeSettings(raw = {}) {
     next[key] = number(data[key], base[key], min, max);
   if (!['system', 'light', 'dark'].includes(next.theme)) next.theme = 'system';
   if (!['bilingual', 'translation'].includes(next.mode)) next.mode = 'bilingual';
+  if (!TRANSLATION_STYLES.some(([id]) => id === next.translationStyle))
+    next.translationStyle = base.translationStyle;
+  next.translationFont = cleanFontFamily(data.translationFont);
+  next.translationFontWeight = ['inherit', '400', '500', '600', '700'].includes(
+    String(data.translationFontWeight),
+  )
+    ? String(data.translationFontWeight)
+    : 'inherit';
+  next.translationLineHeight = number(data.translationLineHeight, 1.8, 1.2, 2.8);
+  next.translationParagraphGap = number(data.translationParagraphGap, 0.65, 0, 2);
   return next;
+}
+export function translationSettingsChanged(previous, next) {
+  const inputs = (settings) =>
+    Object.fromEntries(
+      [
+        'profiles',
+        'roles',
+        'sourceLanguage',
+        'targetLanguage',
+        'inputTargetLanguage',
+        'glossary',
+        'prompt',
+        'maskPrivacy',
+        'privacyPatterns',
+        'siteRules',
+        'autoSites',
+        'blockSites',
+        'translateTitle',
+        'lazy',
+      ].map((key) => [key, settings[key]]),
+    );
+  return JSON.stringify(inputs(previous)) !== JSON.stringify(inputs(next));
 }
 export function publicSettings(settings) {
   return {

@@ -21,7 +21,7 @@ if (!globalThis.__opaoContent) {
       return true;
     }
     if (message.channel === 'opao-settings') {
-      ready.then((app) => app.update(message.settings));
+      ready.then((app) => app.update(message.settings, message.translationChanged !== false));
       return false;
     }
     if (message.channel === 'opao-progress') {
@@ -428,14 +428,11 @@ async function initialize() {
     ui,
     captions,
     action,
-    update(next) {
+    update(next, translationChanged = true) {
       settings = next;
       ui.update(next);
-      ui.floating(() =>
-        rpc('page-action', { action: 'toggle-page' }).catch((error) => ui.notify(error.message)),
-      );
-      captions.update(next);
-      page.update(next);
+      captions.update(next, translationChanged);
+      page.update(next, translationChanged);
     },
   };
 }

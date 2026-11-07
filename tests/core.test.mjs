@@ -10,7 +10,13 @@ import {
   importLegacy,
   matchesUrl,
   LANGUAGES,
+  translationSettingsChanged,
 } from '../src/shared/config.js';
+import {
+  TRANSLATION_STYLES,
+  cleanFontFamily,
+  normalizeFloatingPosition,
+} from '../src/shared/appearance.js';
 import {
   endpoint,
   generationRequest,
@@ -65,6 +71,60 @@ test('endpoint paths preserve custom prefixes and queries', () => {
     'https://example.test/private/infer?tenant=a',
   );
   assert.throws(() => endpoint({ ...profile, baseUrl: 'javascript:alert(1)' }));
+});
+test('0.1.0 appearance fields migrate without losing model data or explicit style', () => {
+  const old = {
+    profiles: [
+      {
+        ...createProfile('old'),
+        baseUrl: 'https://api.example.test/v1',
+        apiKey: 'private-fixture',
+        model: 'old-model',
+      },
+    ],
+    roles: { text: 'old' },
+    translationStyle: 'line',
+    textSize: 115,
+  };
+  const next = normalizeSettings(old);
+  assert.equal(next.profiles[0].apiKey, 'private-fixture');
+  assert.equal(next.roles.text, 'old');
+  assert.equal(next.translationStyle, 'line');
+  assert.equal(next.translationFont, '');
+  assert.equal(next.translationLineHeight, 1.8);
+  assert.equal(next.textSize, 115);
+  assert.equal(normalizeSettings().translationStyle, 'muted');
+  assert.equal(TRANSLATION_STYLES.length, 8);
+  assert.equal(cleanFontFamily('Georgia, SimSun, serif'), 'Georgia, SimSun, serif');
+  assert.equal(cleanFontFamily('Arial; color:red'), '');
+});
+test('floating coordinates reject invalid values and clamp to viewport fractions', () => {
+  assert.equal(normalizeFloatingPosition({ x: NaN, y: 1 }), null);
+  assert.equal(normalizeFloatingPosition(null), null);
+  assert.deepEqual(normalizeFloatingPosition({ side: 'right', x: 3, y: -2 }), {
+    side: 'right',
+    x: 1,
+    y: 0,
+  });
+  assert.deepEqual(normalizeFloatingPosition({ side: 'free', x: 0.4, y: 0.7 }), {
+    side: null,
+    x: 0.4,
+    y: 0.7,
+  });
+});
+test('reading appearance changes preserve existing translations while service changes refresh', () => {
+  const first = normalizeSettings();
+  const appearance = normalizeSettings({
+    ...first,
+    mode: 'translation',
+    translationStyle: 'dashed',
+    translationFont: 'Georgia',
+    textSize: 120,
+  });
+  assert.equal(translationSettingsChanged(first, appearance), false);
+  const service = structuredClone(first);
+  service.profiles[0].model = 'different-model';
+  assert.equal(translationSettingsChanged(first, service), true);
 });
 test('all original language codes remain selectable', () => {
   assert.ok(LANGUAGES.length >= 116);

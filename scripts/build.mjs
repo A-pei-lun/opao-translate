@@ -7,8 +7,13 @@ import { zipSync, strToU8 } from 'fflate';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const project = path.resolve(root, '..');
-const output = path.join(project, '05_构建产物/O泡翻译-0.1.0');
-const allowedOutput = path.resolve(project, '05_构建产物', 'O泡翻译-0.1.0');
+const manifest = JSON.parse(await fs.readFile(path.join(root, 'manifest.json'), 'utf8'));
+const packageInfo = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+if (!/^\d+\.\d+\.\d+$/.test(manifest.version) || manifest.version !== packageInfo.version)
+  throw new Error('Manifest and package versions must match');
+const artifactName = 'O泡翻译-' + manifest.version;
+const output = path.join(project, '05_构建产物', artifactName);
+const allowedOutput = path.resolve(project, '05_构建产物', artifactName);
 if (
   path.resolve(output) !== allowedOutput ||
   !allowedOutput.startsWith(path.resolve(project, '05_构建产物') + path.sep)
@@ -116,13 +121,15 @@ async function collect(directory) {
 }
 await collect(output);
 await fs.writeFile(
-  path.join(project, '05_构建产物/O泡翻译-0.1.0-文件清单.json'),
+  path.join(project, '05_构建产物', artifactName + '-文件清单.json'),
   JSON.stringify(hashes, null, 2),
 );
 entries['版本说明.txt'] = strToU8(
-  'O泡翻译 0.1.0\n在 Edge 的扩展管理页启用开发人员模式，加载此文件夹。首次打开设置添加翻译服务。\n',
+  'O泡翻译 ' +
+    manifest.version +
+    '\n在 Edge 的扩展管理页启用开发人员模式，加载此文件夹。首次打开设置添加翻译服务。\n',
 );
-const archive = path.join(project, '05_构建产物/O泡翻译-0.1.0.zip');
+const archive = path.join(project, '05_构建产物', artifactName + '.zip');
 await fs.writeFile(archive, zipSync(entries, { level: 6 }));
 console.log(
   JSON.stringify(

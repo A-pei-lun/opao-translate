@@ -1,11 +1,14 @@
 import {
   CONFIG_KEY,
+  FLOATING_POSITION_KEY,
+  translationSettingsChanged,
   normalizeSettings,
   publicSettings,
   resolveProfile,
   exportSettings,
   importLegacy,
 } from './shared/config.js';
+import { normalizeFloatingPosition } from './shared/appearance.js';
 
 let runtimeCreation;
 let mutation = Promise.resolve();
@@ -161,8 +164,9 @@ async function focusedFrame(tabId) {
 }
 async function sendTab(tabId, action, payload = {}, frameId) {
   if (typeof tabId !== 'number') throw new Error('请先打开需要翻译的网页');
+  let response;
   try {
-    return await chrome.tabs.sendMessage(
+    response = await chrome.tabs.sendMessage(
       tabId,
       { channel: 'opao-action', action, ...payload },
       frameId === undefined ? undefined : { frameId },
@@ -170,6 +174,8 @@ async function sendTab(tabId, action, payload = {}, frameId) {
   } catch {
     throw new Error('当前页面尚未加载翻译脚本，请刷新网页。浏览器内部页面需要在工作台处理文件');
   }
+  if (response?.ok === false) throw new Error(response.error || '页面操作失败');
+  return response?.ok === true ? response.data : response;
 }
 async function openWorkspace(payload = {}) {
   const url = new URL(chrome.runtime.getURL('workspace.html'));
@@ -282,13 +288,19 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local' || !changes[CONFIG_KEY]) return;
   const config = publicSettings(normalizeSettings(changes[CONFIG_KEY].newValue));
+  const translationChanged = translationSettingsChanged(
+    normalizeSettings(changes[CONFIG_KEY].oldValue),
+    normalizeSettings(changes[CONFIG_KEY].newValue),
+  );
   chrome.tabs.query({}).then((tabs) => {
     for (const tab of tabs)
       chrome.tabs
-        .sendMessage(tab.id, { channel: 'opao-settings', settings: config })
+        .sendMessage(tab.id, { channel: 'opao-settings', settings: config, translationChanged })
         .catch(() => {});
   });
-  chrome.runtime.sendMessage({ channel: 'opao-settings', settings: config }).catch(() => {});
+  chrome.runtime
+    .sendMessage({ channel: 'opao-settings', settings: config, translationChanged })
+    .catch(() => {});
 });
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== 'object') return false;
@@ -312,6 +324,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const publicMethods = [
     'get-public-settings',
     'get-site-rules',
+    'get-floating-position',
+    'set-floating-position',
+    'set-page-preferences',
     'page-action',
     'translate',
     'vision',
@@ -330,6 +345,57 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     const owner = ownerOf(sender);
     if (message.kind === 'get-public-settings') return publicSettings(await settings());
+    if (message.kind === 'get-floating-position') {
+      const value = await chrome.storage.local.get(FLOATING_POSITION_KEY);
+      return normalizeFloatingPosition(value[FLOATING_POSITION_KEY]);
+    }
+    if (message.kind === 'set-floating-position') {
+      const position = normalizeFloatingPosition(message.position);
+      if (!position) throw new Error('浮球位置数据无效');
+      await chrome.storage.local.set({ [FLOATING_POSITION_KEY]: position });
+      return position;
+    }
+    if (message.kind === 'set-page-preferences')
+      return serializeMutation(async () => {
+        const current = await settings();
+        const before = JSON.stringify(current);
+        if (message.profileId !== undefined) {
+          const profile = current.profiles.find(
+            (profile) =>
+              profile.id === message.profileId &&
+              profile.enabled &&
+              profile.capabilities.text &&
+              profile.protocol !== 'asr',
+          );
+          if (!profile) throw new Error('请选择已启用的文本服务');
+          resolveProfile(current, 'text', profile.id);
+          current.roles.text = profile.id;
+        }
+        for (const key of [
+          'sourceLanguage',
+          'targetLanguage',
+          'mode',
+          'translationStyle',
+          'translationFont',
+          'translationFontWeight',
+          'translationLineHeight',
+          'translationParagraphGap',
+          'textSize',
+          'translationColor',
+        ])
+          if (Object.hasOwn(message, key)) current[key] = message[key];
+        const saved = await saveSettings(current);
+        const result = publicSettings(saved);
+        if (before === JSON.stringify(saved) && sender.tab && !privileged)
+          await chrome.tabs
+            .sendMessage(sender.tab.id, {
+              channel: 'opao-settings',
+              settings: result,
+              translationChanged: false,
+            })
+            .catch(() => {});
+        return result;
+      });
     if (message.kind === 'get-site-rules') {
       siteRules ||= fetch(chrome.runtime.getURL('site-rules.json')).then((response) =>
         response.json(),
@@ -348,9 +414,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           'toggle-mask',
           'toggle-subtitles',
           'translate-images',
+          'get-status',
         ].includes(message.action)
       )
         throw new Error('页面操作无效');
+      if (message.action === 'get-status') return sendTab(sender.tab.id, 'get-status', {}, 0);
       return action(message.action, sender.tab);
     }
     if (message.kind === 'save-settings')

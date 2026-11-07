@@ -10,11 +10,17 @@ import { createProfile, normalizeSettings } from '../src/shared/config.js';
 
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const project = path.resolve(source, '..');
-const extension = path.join(project, '05_构建产物/O泡翻译-0.1.0');
-const evidence = path.join(project, '04_验证/Edge端到端');
+const manifestSource = JSON.parse(await fs.readFile(path.join(source, 'manifest.json'), 'utf8'));
+const version = manifestSource.version;
+if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Invalid test version');
+const extension = path.join(project, '05_构建产物', 'O泡翻译-' + version);
+const evidence = path.join(project, '04_验证', version, 'Edge端到端');
 const profile = path.join(evidence, '测试配置');
 await fs.mkdir(evidence, { recursive: true });
-if (path.resolve(profile) !== path.join(path.resolve(project), '04_验证', 'Edge端到端', '测试配置'))
+if (
+  path.resolve(profile) !==
+  path.join(path.resolve(project), '04_验证', version, 'Edge端到端', '测试配置')
+)
   throw new Error('Invalid test profile path');
 try {
   const info = await fs.lstat(profile);
@@ -161,6 +167,7 @@ const server = http.createServer(async (req, res) => {
     json(res, { error: { message: 'Invalid JSON' } }, 400);
     return;
   }
+  apiCalls.at(-1).model = body.model || '';
   const content =
     body.messages?.at(-1)?.content || body.input?.[0]?.content || body.contents?.[0]?.parts || '';
   const hasImage =
@@ -393,6 +400,289 @@ try {
       .getByRole('button', { name: '切换网页双语翻译', exact: true })
       .click();
     await page.waitForFunction(() => !document.querySelector('.opao-target'));
+  });
+  await check(
+    'complete inline paragraphs, breaks and flex/grid translations stack naturally',
+    async () => {
+      const originals = await page.evaluate(() => {
+        const section = document.createElement('section');
+        section.id = 'paragraph-fixtures';
+        section.innerHTML =
+          '<div id="inline-paragraph">A complete <strong>paragraph</strong> keeps <a href="#notes">every link</a> together.</div><div id="nested-paragraph"><span>Nested <em>inline nodes</em> belong to </span><span>one complete paragraph.</span></div><div id="break-paragraph">First full paragraph <em>before the break.</em><br><br>Second full paragraph <a href="#notes">after the break.</a></div><h3 id="flex-heading" style="display:flex;gap:8px"><span>Description</span><span>details</span></h3><div id="grid-paragraph" style="display:grid;grid-template-columns:auto 1fr;gap:8px"><span>A full</span><strong>grid paragraph</strong></div><div id="mixed-container">Text before the nested block.<p id="inner-canonical">A canonical paragraph.</p>Text after the nested block.</div>';
+        document.querySelector('main').append(section);
+        const shadow = document.createElement('div');
+        shadow.id = 'inline-shadow-fixture';
+        section.append(shadow);
+        shadow.attachShadow({ mode: 'open' }).innerHTML =
+          'A full <em>shadow paragraph</em> stays together.';
+        return Object.fromEntries(
+          [...section.children].map((element) => [element.id, element.innerHTML]),
+        );
+      });
+      await act('toggle-page');
+      for (const id of ['inline-paragraph', 'nested-paragraph', 'flex-heading', 'grid-paragraph'])
+        await page.locator('#' + id + ' > .opao-target[data-state=done]').waitFor();
+      assert.equal(await page.locator('#inline-paragraph .opao-target').count(), 1);
+      assert.equal(await page.locator('#nested-paragraph .opao-target').count(), 1);
+      await page
+        .locator('#inline-shadow-fixture')
+        .locator('.opao-target[data-state=done]')
+        .waitFor();
+      assert.equal(await page.locator('#inline-shadow-fixture').locator('.opao-target').count(), 1);
+      await page.locator('#break-paragraph .opao-target[data-state=done]').nth(1).waitFor();
+      assert.equal(await page.locator('#break-paragraph .opao-target').count(), 2);
+      await page.locator('#mixed-container .opao-target[data-state=done]').nth(2).waitFor();
+      const geometry = await page.evaluate(() =>
+        ['inline-paragraph', 'nested-paragraph', 'flex-heading', 'grid-paragraph'].map((id) => {
+          const element = document.getElementById(id),
+            target = element.querySelector(':scope>.opao-target');
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          range.setEndBefore(target);
+          return {
+            id,
+            originalBottom: range.getBoundingClientRect().bottom,
+            translationTop: target.getBoundingClientRect().top,
+          };
+        }),
+      );
+      for (const item of geometry)
+        assert.ok(item.translationTop >= item.originalBottom - 1, JSON.stringify(item));
+      await page.waitForTimeout(650);
+      assert.equal(await page.locator('#flex-heading .opao-target').count(), 1);
+      assert.equal(await page.locator('#grid-paragraph .opao-target').count(), 1);
+      await act('only-translation');
+      assert.equal(
+        await page.locator('#inline-paragraph>.opao-source.opao-source-hidden').count(),
+        1,
+      );
+      assert.equal(await page.locator('#break-paragraph .opao-target').count(), 2);
+      await act('only-translation');
+      assert.equal(await page.locator('#inline-paragraph>.opao-source').count(), 0);
+      await page
+        .locator('#paragraph-fixtures')
+        .screenshot({ path: path.join(evidence, '整段自然对照.png') });
+      await act('restore');
+      const restored = await page.evaluate(() =>
+        Object.fromEntries(
+          [...document.querySelector('#paragraph-fixtures').children].map((element) => [
+            element.id,
+            element.innerHTML,
+          ]),
+        ),
+      );
+      assert.deepEqual(restored, originals);
+      assert.equal(
+        await page
+          .locator('#flex-heading')
+          .evaluate((element) => element.style.getPropertyValue('flex-wrap')),
+        '',
+      );
+      await page.evaluate(() => document.querySelector('#paragraph-fixtures').remove());
+    },
+  );
+  const revealDock = async () => {
+    const button = page
+      .locator('opao-reader-ui')
+      .getByRole('button', { name: '切换网页双语翻译', exact: true });
+    const box = await button.boundingBox();
+    await page.mouse.move(Math.max(5, Math.min(1275, box.x + 12)), box.y + 23);
+    await page.waitForFunction(
+      () =>
+        !document
+          .querySelector('opao-reader-ui')
+          .shadowRoot.querySelector('.floating-dock')
+          .classList.contains('is-collapsed'),
+    );
+    await page.waitForTimeout(190);
+    return button;
+  };
+  await check(
+    'floating drag suppresses translation, persists and docks to both edges',
+    async () => {
+      let button = await revealDock(),
+        box = await button.boundingBox();
+      const count = apiCalls.length;
+      await page.mouse.move(box.x + 23, box.y + 23);
+      await page.mouse.down();
+      await page.mouse.move(360, 330, { steps: 12 });
+      await page.mouse.up();
+      await page.mouse.move(150, 100);
+      await page.waitForTimeout(250);
+      assert.equal(await page.locator('.opao-target').count(), 0);
+      assert.equal(apiCalls.length, count);
+      let stored = await rpcPage(settingsPage, 'get-floating-position');
+      assert.equal(stored.side, null);
+      const freeX = await button.evaluate((element) => element.getBoundingClientRect().left);
+      await page.reload();
+      await page.locator('opao-reader-ui').waitFor();
+      await page.waitForFunction(
+        () =>
+          document.querySelector('opao-reader-ui').shadowRoot.querySelector('.floating-dock')
+            .dataset.side === 'free',
+      );
+      button = await revealDock();
+      assert.ok(Math.abs((await button.boundingBox()).x - freeX) < 3);
+      await page.evaluate(() => {
+        window.__dragTrace = [];
+        const root = document.querySelector('opao-reader-ui').shadowRoot,
+          button = root.querySelector('.floating');
+        for (const type of [
+          'pointerdown',
+          'pointermove',
+          'pointerup',
+          'pointercancel',
+          'lostpointercapture',
+        ])
+          button.addEventListener(type, (event) =>
+            window.__dragTrace.push({
+              type,
+              x: event.clientX,
+              y: event.clientY,
+              left: root.querySelector('.floating-dock').style.left,
+              side: root.querySelector('.floating-dock').dataset.side,
+            }),
+          );
+      });
+      box = await button.boundingBox();
+      await page.mouse.move(box.x + 23, box.y + 23);
+      await page.mouse.down();
+      await page.mouse.move(7, 340, { steps: 12 });
+      await page.mouse.up();
+      await page.mouse.move(200, 200);
+      await page.waitForTimeout(750);
+      stored = await rpcPage(settingsPage, 'get-floating-position');
+      const trace = await page.evaluate(() => window.__dragTrace);
+      await fs.writeFile(
+        path.join(evidence, '浮球拖动诊断.json'),
+        JSON.stringify({ stored, trace }, null, 2),
+      );
+      if (stored.side !== 'left')
+        await page.screenshot({ path: path.join(evidence, '浮球拖动诊断.png') });
+      assert.equal(stored.side, 'left', JSON.stringify(trace));
+      box = await button.boundingBox();
+      assert.ok(box.x < 0 && box.x + box.width > 8);
+      button = await revealDock();
+      box = await button.boundingBox();
+      await page.mouse.move(box.x + 23, box.y + 23);
+      await page.mouse.down();
+      await page.mouse.move(1274, 300, { steps: 12 });
+      await page.mouse.up();
+      await page.mouse.move(200, 150);
+      await page.waitForTimeout(750);
+      stored = await rpcPage(settingsPage, 'get-floating-position');
+      assert.equal(stored.side, 'right');
+      box = await button.boundingBox();
+      assert.ok(box.x < 1280 && box.x + box.width > 1280);
+    },
+  );
+  await check('hover setting entry switches configured models from the page', async () => {
+    await revealDock();
+    const host = page.locator('opao-reader-ui');
+    await host.getByRole('button', { name: '打开页内设置', exact: true }).click();
+    const panel = host.getByRole('dialog', { name: '页内设置', exact: true });
+    await panel.waitFor();
+    await panel.getByLabel('页内翻译服务', { exact: true }).selectOption('second');
+    await panel.getByText('默认翻译服务已切换', { exact: true }).waitFor();
+    const saved = await rpcPage(settingsPage, 'get-settings');
+    assert.equal(saved.roles.text, 'second');
+    assert.equal(saved.roles.vision, 'main');
+    assert.equal(saved.roles.input, 'main');
+    await panel.getByRole('button', { name: '翻译页面', exact: true }).click();
+    await page.locator('#plain>.opao-target[data-state=done]').waitFor();
+    assert.ok(apiCalls.some((call) => call.model === 'fixture-second'));
+    await act('only-translation');
+    await panel.getByLabel('页内翻译偏好', { exact: true }).selectOption('bilingual');
+    await page.waitForFunction(
+      () => !document.querySelector('#plain>.opao-source.opao-source-hidden'),
+    );
+    await page.setViewportSize({ width: 390, height: 900 });
+    await page.waitForTimeout(100);
+    assert.ok(
+      await panel.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.left >= 0 && rect.right <= innerWidth + 1 && rect.bottom <= innerHeight + 1;
+      }),
+    );
+    await panel.screenshot({ path: path.join(evidence, '页内设置-窄屏.png') });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await panel.screenshot({ path: path.join(evidence, '页内服务设置.png') });
+    await panel.getByRole('button', { name: '显示原文', exact: true }).click();
+    await panel.getByLabel('页内翻译服务', { exact: true }).selectOption('main');
+    await panel.getByText('默认翻译服务已切换', { exact: true }).waitFor();
+    await panel.getByRole('button', { name: '关闭页内设置', exact: true }).click();
+  });
+  await check('eight appearance styles and custom font update without model requests', async () => {
+    await act('toggle-page');
+    await page.locator('#plain>.opao-target[data-state=done]').waitFor();
+    await page.frameLocator('iframe').locator('.opao-target[data-state=done]').waitFor();
+    await page.waitForTimeout(450);
+    const count = apiCalls.length;
+    for (const style of [
+      'muted',
+      'plain',
+      'line',
+      'soft',
+      'underline',
+      'dashed',
+      'highlight',
+      'italic',
+    ]) {
+      await rpcPage(settingsPage, 'set-page-preferences', {
+        translationStyle: style,
+        translationFont: 'Georgia',
+        translationFontWeight: '600',
+        textSize: 115,
+        translationLineHeight: 1.9,
+        translationParagraphGap: 0.7,
+      });
+      await page.waitForFunction(
+        (style) => document.querySelector('#plain>.opao-target')?.dataset.style === style,
+        style,
+      );
+      assert.ok(
+        (
+          await page
+            .locator('#plain>.opao-target')
+            .evaluate((element) => getComputedStyle(element).fontFamily)
+        ).includes('Georgia'),
+      );
+    }
+    assert.equal(apiCalls.length, count);
+    await settingsPage.reload();
+    await settingsPage.getByRole('button', { name: '阅读与交互', exact: true }).click();
+    await settingsPage.getByText('设置字体、字重和段落间距', { exact: true }).click();
+    await settingsPage.getByLabel('译文字体', { exact: true }).selectOption('__custom');
+    await settingsPage
+      .getByLabel('自定义译文字体', { exact: true })
+      .fill('Arial, SimSun, sans-serif');
+    await settingsPage.getByLabel('译文样式', { exact: true }).selectOption('muted');
+    assert.ok(
+      (
+        await settingsPage
+          .locator('.reading-preview>.opao-target')
+          .evaluate((element) => getComputedStyle(element).fontFamily)
+      ).includes('Arial'),
+    );
+    await settingsPage.getByRole('button', { name: '保存设置', exact: true }).click();
+    await settingsPage.getByText('设置已保存', { exact: true }).waitFor();
+    await page.waitForFunction(() =>
+      getComputedStyle(document.querySelector('#plain>.opao-target')).fontFamily.includes('Arial'),
+    );
+    assert.equal(apiCalls.length, count);
+    await settingsPage.getByText('预览全部译文样式', { exact: true }).click();
+    assert.equal(await settingsPage.locator('.style-choice').count(), 8);
+    await settingsPage.getByText('设置字体、字重和段落间距', { exact: true }).click();
+    const radioWidth = await settingsPage
+      .locator('.style-choice input[type=radio]')
+      .first()
+      .evaluate((element) => element.getBoundingClientRect().width);
+    assert.ok(radioWidth <= 20);
+    await settingsPage.screenshot({
+      path: path.join(evidence, '译文样式与自定义字体.png'),
+      fullPage: true,
+    });
+    await act('restore');
   });
   await check('page bilingual rich text iframe and Shadow DOM', async () => {
     await act('toggle-page');

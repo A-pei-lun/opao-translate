@@ -81,7 +81,11 @@ export class CaptionController {
       if (this.enabled) this.tick();
     }, 250);
   }
-  update(settings) {
+  update(settings, translationChanged = true) {
+    if (!translationChanged) {
+      this.settings = settings;
+      return;
+    }
     this.generation++;
     this.stopJobs();
     this.settings = settings;

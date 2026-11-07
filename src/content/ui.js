@@ -8,6 +8,9 @@ import {
   download,
 } from '../shared/client.js';
 import { wrapText, canvasBlob } from '../shared/images.js';
+import { LANGUAGES } from '../shared/config.js';
+import { TRANSLATION_STYLES } from '../shared/appearance.js';
+import { FloatingDock, floatingCss } from './floating.js';
 
 const css = `
 :host {
@@ -28,6 +31,7 @@ const css = `
   inset: 0;
   z-index: 2147483600;
   pointer-events: none;
+  overflow: clip;
   color-scheme: light;
 }
 :host([data-theme="dark"]) {
@@ -298,7 +302,14 @@ export class ContentUI {
       'data-theme': settings.theme || 'system',
     });
     this.shadow = this.host.attachShadow({ mode: 'open' });
-    this.shadow.append(el('style', { text: css }));
+    this.shadow.append(el('style', { text: css + floatingCss }));
+    this.pageSettings = el('section', {
+      id: 'opao-page-settings',
+      class: 'page-settings',
+      role: 'dialog',
+      'aria-label': '页内设置',
+      hidden: '',
+    });
     this.toastNode = el('div', { class: 'toast', role: 'status', hidden: '' });
     this.panel = el('section', {
       class: 'panel',
@@ -316,13 +327,23 @@ export class ContentUI {
     this.captionOriginal = el('div', { class: 'caption-original' });
     this.captionTarget = el('div', { class: 'caption-target' });
     this.caption.append(this.captionOriginal, this.captionTarget);
-    this.shadow.append(this.panel, this.bubble, this.caption, this.toastNode);
+    this.shadow.append(this.panel, this.bubble, this.caption, this.toastNode, this.pageSettings);
     document.documentElement.append(this.host);
+    document.addEventListener(
+      'pointerdown',
+      (event) => {
+        if (!this.pageSettings.hidden && !event.composedPath().includes(this.host))
+          this.closePageSettings();
+      },
+      true,
+    );
   }
   update(settings) {
     this.settings = settings;
     this.host.dataset.theme = settings.theme || 'system';
     this.caption.style.fontSize = settings.subtitleFontSize + 'px';
+    if (this.onFloatTranslate) this.floating(this.onFloatTranslate);
+    this.refreshPageSettings();
   }
   notify(message) {
     clearTimeout(this.toastTimer);
@@ -333,16 +354,184 @@ export class ContentUI {
     }, 6500);
   }
   floating(action) {
-    this.float?.remove();
-    if (!this.settings.floatingButton || window !== window.top) return;
-    this.float = el('button', {
-      class: 'floating',
-      title: 'O泡翻译，切换网页双语',
-      'aria-label': '切换网页双语翻译',
-      text: 'O',
-      onclick: action,
+    this.onFloatTranslate = action;
+    if (!this.settings.floatingButton || window !== window.top) {
+      this.closePageSettings();
+      this.dock?.destroy();
+      this.dock = null;
+      return;
+    }
+    if (this.dock) return;
+    this.dock = new FloatingDock(this.shadow, {
+      translate: () => {
+        this.onFloatTranslate();
+        if (!this.pageSettings.hidden) setTimeout(() => this.refreshPageState(), 60);
+      },
+      settings: () => this.togglePageSettings(),
+      move: () => this.positionPageSettings(),
+      notify: (message) => this.notify(message),
     });
-    this.shadow.append(this.float);
+    this.float = this.dock.button;
+  }
+  positionPageSettings() {
+    if (this.pageSettings.hidden || !this.dock) return;
+    const { x, y, size } = this.dock.anchor();
+    const bounds = this.pageSettings.getBoundingClientRect();
+    let left = x > innerWidth / 2 ? x - bounds.width - 12 : x + size + 12;
+    let top = y;
+    if (innerWidth < bounds.width + size + 36)
+      top = y >= bounds.height + 24 ? y - bounds.height - 12 : y + size + 42;
+    left = Math.max(12, Math.min(innerWidth - bounds.width - 12, left));
+    top = Math.max(12, Math.min(innerHeight - bounds.height - 12, top));
+    this.pageSettings.style.left = left + 'px';
+    this.pageSettings.style.top = top + 'px';
+  }
+  closePageSettings() {
+    this.pageSettings.hidden = true;
+    this.dock?.setOpen(false);
+  }
+  async refreshPageState() {
+    if (this.pageSettings.hidden || !this.pageTranslate) return;
+    try {
+      const value = await rpc('page-action', { action: 'get-status' });
+      this.pageTranslate.textContent = value?.active ? '显示原文' : '翻译页面';
+    } catch {}
+  }
+  refreshPageSettings() {
+    if (!this.pageFields) return;
+    const profiles = this.settings.profiles.filter(
+      (profile) =>
+        profile.enabled &&
+        profile.capabilities.text &&
+        profile.protocol !== 'asr' &&
+        profile.configured,
+    );
+    const service = this.pageFields.profileId;
+    service.replaceChildren(
+      el('option', { value: '' }, profiles.length ? '请选择服务' : '请先配置文本服务'),
+      ...profiles.map((profile) =>
+        el(
+          'option',
+          { value: profile.id },
+          profile.name + (profile.model ? ' / ' + profile.model : ''),
+        ),
+      ),
+    );
+    service.value = profiles.some((profile) => profile.id === this.settings.roles.text)
+      ? this.settings.roles.text
+      : '';
+    for (const key of ['sourceLanguage', 'targetLanguage', 'mode', 'translationStyle'])
+      this.pageFields[key].value = this.settings[key];
+    for (const field of Object.values(this.pageFields)) field.disabled = Boolean(this.pageSaving);
+    service.disabled = this.pageSaving || !profiles.length;
+    this.pageTranslate.disabled = this.pageSaving || !service.value;
+    if (!this.pageSaving) this.refreshPageState();
+  }
+  togglePageSettings() {
+    if (!this.pageSettings.hidden) {
+      this.closePageSettings();
+      return;
+    }
+    this.close(false);
+    if (!this.pageFields) {
+      const label = (name, control) => el('label', {}, el('span', { text: name }), control);
+      const makeSelect = (name, pairs) =>
+        el(
+          'select',
+          { 'aria-label': name },
+          pairs.map(([value, text]) => el('option', { value }, text)),
+        );
+      this.pageFields = {
+        profileId: makeSelect('页内翻译服务', []),
+        sourceLanguage: makeSelect('页内源语言', LANGUAGES),
+        targetLanguage: makeSelect(
+          '页内目标语言',
+          LANGUAGES.filter(([id]) => id !== 'auto'),
+        ),
+        mode: makeSelect('页内翻译偏好', [
+          ['bilingual', '双语对照'],
+          ['translation', '纯译文'],
+        ]),
+        translationStyle: makeSelect('页内译文样式', TRANSLATION_STYLES),
+      };
+      this.pageResult = el('div', { class: 'settings-result', role: 'status' });
+      for (const [key, field] of Object.entries(this.pageFields))
+        field.onchange = async () => {
+          if (this.pageSaving) return;
+          this.pageSaving = true;
+          this.pageResult.classList.remove('error');
+          this.pageResult.textContent = '正在保存…';
+          const value = field.value;
+          this.refreshPageSettings();
+          try {
+            this.settings = await rpc('set-page-preferences', { [key]: value });
+            this.pageResult.textContent =
+              key === 'profileId' ? '默认翻译服务已切换' : '阅读偏好已保存';
+          } catch (error) {
+            this.pageResult.textContent = error.message;
+            this.pageResult.classList.add('error');
+          } finally {
+            this.pageSaving = false;
+            this.refreshPageSettings();
+            this.positionPageSettings();
+          }
+        };
+      this.pageTranslate = el('button', {
+        class: 'primary',
+        text: '翻译页面',
+        onclick: async () => {
+          try {
+            await rpc('page-action', { action: 'toggle-page' });
+            this.refreshPageState();
+          } catch (error) {
+            this.pageResult.textContent = error.message;
+            this.pageResult.classList.add('error');
+          }
+        },
+      });
+      this.pageSettings.append(
+        el(
+          'div',
+          { class: 'page-settings-head' },
+          el('strong', { text: '页内设置' }),
+          el('button', {
+            text: '关闭',
+            'aria-label': '关闭页内设置',
+            onclick: () => {
+              this.closePageSettings();
+              this.dock?.settingsButton.focus();
+            },
+          }),
+        ),
+        el(
+          'div',
+          { class: 'page-settings-body' },
+          el(
+            'div',
+            { class: 'page-settings-row' },
+            label('源语言', this.pageFields.sourceLanguage),
+            label('目标语言', this.pageFields.targetLanguage),
+          ),
+          label('翻译服务', this.pageFields.profileId),
+          el(
+            'div',
+            { class: 'page-settings-row' },
+            label('翻译偏好', this.pageFields.mode),
+            label('译文样式', this.pageFields.translationStyle),
+          ),
+          this.pageTranslate,
+          this.pageResult,
+          el('button', {
+            text: '完整设置与字体',
+            onclick: () => rpc('open-settings').catch((error) => this.notify(error.message)),
+          }),
+        ),
+      );
+    }
+    this.pageSettings.hidden = false;
+    this.dock?.setOpen(true);
+    this.refreshPageSettings();
+    this.positionPageSettings();
   }
   selectionBubble(rect, action) {
     this.bubble.hidden = false;
@@ -362,11 +551,18 @@ export class ContentUI {
     this.captionTarget.textContent = translated;
     this.caption.style.fontSize = this.settings.subtitleFontSize + 'px';
   }
-  close() {
+  close(restoreFocus = true) {
+    const wasOpen = !this.panel.hidden;
+    this.closePageSettings();
     this.panel.hidden = true;
     for (const id of this.panelJobs || []) rpc('cancel', { jobId: id }).catch(() => {});
     this.panelJobs = new Set();
-    if (this.previousFocus?.isConnected && this.previousFocus !== this.host)
+    if (
+      wasOpen &&
+      restoreFocus &&
+      this.previousFocus?.isConnected &&
+      this.previousFocus !== this.host
+    )
       this.previousFocus.focus?.();
   }
   showText(

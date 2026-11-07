@@ -102,7 +102,7 @@ button:disabled {
 .danger {
   color: var(--error);
 }
-input:not([type='checkbox']):not([type='range']),
+input:not([type='checkbox']):not([type='range']):not([type='radio']),
 select,
 textarea {
   width: 100%;
@@ -710,4 +710,90 @@ h3 {
     transition: none !important;
     scroll-behavior: auto !important;
   }
+}
+
+.reading-preview {
+  display: block;
+  font:
+    18px/1.85 Georgia,
+    'Source Han Serif SC',
+    SimSun,
+    serif;
+}
+.reading-preview > .preview-source {
+  font: inherit;
+}
+.reading-preview > .opao-target {
+  border: 0;
+  padding: 0;
+}
+.reading-details {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.reading-details > summary {
+  color: var(--brand);
+  font-weight: 500;
+  cursor: pointer;
+  min-height: 36px;
+  display: list-item;
+}
+.reading-details[open] > summary {
+  margin-bottom: 16px;
+}
+.style-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.style-choice {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.style-choice:has(input:checked) {
+  border-color: var(--brand);
+  background: var(--soft);
+}
+.style-choice-preview {
+  font:
+    14px/1.75 Georgia,
+    'Microsoft YaHei',
+    serif;
+}
+.style-choice-preview > p {
+  margin: 0;
+}
+.style-choice-preview > .opao-target {
+  margin-top: 0.5em;
+}
+.field[hidden] {
+  display: none;
+}
+@media (max-width: 760px) {
+  .style-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.style-choice .check {
+  justify-content: flex-start;
+  gap: 9px;
+  min-width: 0;
+}
+.style-choice input[type='radio'] {
+  width: 17px;
+  height: 17px;
+  min-height: 0;
+  flex: 0 0 17px;
+  accent-color: var(--brand);
+  margin: 0;
+  padding: 0;
+}
+.style-choice-preview .opao-target {
+  min-height: 0;
 }

@@ -1,7 +1,14 @@
 import { createProfile, LANGUAGES, PROTOCOLS, TRADITIONAL_PROTOCOLS } from './shared/config.js';
 import { rpc, el, applyTheme, status, jobId, textFile, profileOptions } from './shared/client.js';
+import {
+  TRANSLATION_STYLES,
+  FONT_PRESETS,
+  applyTranslationAppearance,
+  translationCss,
+} from './shared/appearance.js';
 
 const root = document.getElementById('app');
+document.head.append(el('style', { text: translationCss }));
 let settings,
   selected,
   currentSection = 'services';
@@ -457,19 +464,39 @@ function renderServices() {
   );
 }
 function renderReading() {
+  const previewSource = el('p', {
+    class: 'preview-source',
+    text: 'Read a complete paragraph in its original context. The translation follows as a paragraph of its own, keeping the meaning and rhythm together.',
+  });
+  const previewTarget = el('p', {
+    class: 'opao-target',
+    text: '在原有语境中阅读完整段落。译文随后独立成段，让含义与节奏连贯呈现。',
+    lang: 'zh-CN',
+  });
   const preview = el(
-    'div',
-    { class: 'preview' },
-    el(
-      'div',
-      {},
-      el('p', { text: 'A good translation keeps the meaning, the rhythm, and the room to think.' }),
-    ),
-    el(
-      'div',
-      { class: 'target' },
-      el('p', { text: '好的翻译，保留原意与节奏，也给思考留出空间。' }),
-    ),
+    'article',
+    { class: 'preview reading-preview', 'aria-label': '段落样式实时预览' },
+    previewSource,
+    previewTarget,
+  );
+  const samples = [];
+  const refresh = () => {
+    applyTranslationAppearance(previewTarget, settings);
+    previewSource.hidden = settings.mode === 'translation';
+    for (const { target, id, radio } of samples) {
+      applyTranslationAppearance(target, { ...settings, translationStyle: id });
+      radio.checked = settings.translationStyle === id;
+    }
+  };
+  const styles = selectFor(settings, 'translationStyle', TRANSLATION_STYLES, refresh);
+  const mode = selectFor(
+    settings,
+    'mode',
+    [
+      ['bilingual', '双语对照'],
+      ['translation', '纯译文'],
+    ],
+    refresh,
   );
   const theme = selectFor(
     settings,
@@ -481,20 +508,144 @@ function renderReading() {
     ],
     () => applyTheme(settings),
   );
-  const previewText = preview.querySelector('.target p');
-  previewText.style.fontSize = (18 * settings.textSize) / 100 + 'px';
-  const size = inputFor(settings, 'textSize', 'range', { min: 70, max: 180 });
+  const size = inputFor(settings, 'textSize', 'range', {
+    min: 70,
+    max: 180,
+    'aria-label': '译文字号比例',
+  });
+  const sizeValue = el('span', { class: 'hint', text: settings.textSize + '%' });
   size.oninput = () => {
     settings.textSize = Number(size.value);
-    previewText.style.fontSize = (18 * settings.textSize) / 100 + 'px';
+    sizeValue.textContent = settings.textSize + '%';
     dirty();
+    refresh();
   };
-  main.replaceChildren(
-    header('阅读与交互', '原文和译文各有位置，长文阅读保持连贯。'),
+  const color = inputFor(settings, 'translationColor', 'text', {
+    placeholder: '留空跟随网页，例如 #086F83',
+  });
+  color.oninput = () => {
+    settings.translationColor = color.value;
+    dirty();
+    refresh();
+  };
+  const gallery = el('div', { class: 'style-grid' });
+  for (const [id, name] of TRANSLATION_STYLES) {
+    const radio = el('input', {
+      type: 'radio',
+      name: 'translation-style-preview',
+      value: id,
+      checked: settings.translationStyle === id,
+      'aria-label': name + '译文样式',
+    });
+    const target = el('p', { class: 'opao-target', text: '每个段落完整呈现，阅读更连贯。' });
+    radio.onchange = () => {
+      if (radio.checked) {
+        settings.translationStyle = id;
+        styles.value = id;
+        dirty();
+        refresh();
+      }
+    };
+    samples.push({ target, id, radio });
+    gallery.append(
+      el(
+        'label',
+        { class: 'style-choice' },
+        el('span', { class: 'check' }, radio, name),
+        el(
+          'div',
+          { class: 'style-choice-preview' },
+          el('p', { text: 'Keep each paragraph together.' }),
+          target,
+        ),
+      ),
+    );
+  }
+  const preset = el(
+    'select',
+    { 'aria-label': '译文字体' },
+    ...FONT_PRESETS.map(([value, label]) => el('option', { value }, label)),
+    el('option', { value: '__custom' }, '自定义字体'),
+  );
+  preset.value = FONT_PRESETS.some(([value]) => value === settings.translationFont)
+    ? settings.translationFont
+    : '__custom';
+  const customFont = el('input', {
+    type: 'text',
+    maxlength: 180,
+    placeholder: '例如 Noto Serif SC, SimSun, serif',
+    'aria-label': '自定义译文字体',
+  });
+  customFont.value = settings.translationFont;
+  const customField = field(
+    '自定义译文字体',
+    customFont,
+    '填写本机已经安装的字体名称，也可用逗号填写回退字体。',
+  );
+  customField.hidden = preset.value !== '__custom';
+  preset.onchange = () => {
+    customField.hidden = preset.value !== '__custom';
+    settings.translationFont = preset.value === '__custom' ? customFont.value : preset.value;
+    dirty();
+    refresh();
+  };
+  customFont.oninput = () => {
+    settings.translationFont = customFont.value;
+    dirty();
+    refresh();
+  };
+  const lineHeight = numberFor(settings, 'translationLineHeight', 1.2, 2.8, 0.1);
+  const gap = numberFor(settings, 'translationParagraphGap', 0, 2, 0.05);
+  for (const [input, key] of [
+    [lineHeight, 'translationLineHeight'],
+    [gap, 'translationParagraphGap'],
+  ])
+    input.oninput = () => {
+      if (Number.isFinite(input.valueAsNumber)) settings[key] = input.valueAsNumber;
+      dirty();
+      refresh();
+    };
+  const fontSettings = el(
+    'details',
+    { class: 'reading-details' },
+    el('summary', { text: '设置字体、字重和段落间距' }),
     el(
       'div',
       { class: 'stack' },
-      preview,
+      el(
+        'div',
+        { class: 'grid-two' },
+        field('译文字体', preset),
+        field(
+          '译文字重',
+          selectFor(
+            settings,
+            'translationFontWeight',
+            [
+              ['inherit', '跟随原文'],
+              ['400', '常规'],
+              ['500', '中等'],
+              ['600', '半粗'],
+              ['700', '粗体'],
+            ],
+            refresh,
+          ),
+        ),
+      ),
+      customField,
+      el(
+        'div',
+        { class: 'grid-two' },
+        field('译文行距', lineHeight),
+        field('原文与译文间距，em', gap),
+      ),
+    ),
+  );
+  main.replaceChildren(
+    header('阅读与交互', '整段原文在上，完整译文在下。按阅读习惯选择样式和字体。'),
+    el(
+      'div',
+      { class: 'stack' },
       el(
         'div',
         { class: 'grid-three' },
@@ -520,26 +671,22 @@ function renderReading() {
         'div',
         { class: 'grid-three' },
         field('界面主题', theme),
-        field(
-          '默认阅读模式',
-          selectFor(settings, 'mode', [
-            ['bilingual', '双语对照'],
-            ['translation', '纯译文'],
-          ]),
-        ),
-        field(
-          '译文样式',
-          selectFor(settings, 'translationStyle', [
-            ['line', '侧边细线'],
-            ['soft', '浅底色'],
-            ['plain', '简洁文本'],
-          ]),
-        ),
+        field('默认阅读模式', mode),
+        field('译文样式', styles),
       ),
-      field('译文字号比例', size),
-      field(
-        '译文颜色，留空跟随网页',
-        inputFor(settings, 'translationColor', 'text', { placeholder: '例如 #086F83' }),
+      preview,
+      el(
+        'div',
+        { class: 'grid-two' },
+        field('译文字号比例', el('div', { class: 'compact-stack' }, size, sizeValue)),
+        field('译文颜色，留空跟随网页', color),
+      ),
+      fontSettings,
+      el(
+        'details',
+        { class: 'reading-details' },
+        el('summary', { text: '预览全部译文样式' }),
+        gallery,
       ),
       el(
         'div',
@@ -560,7 +707,11 @@ function renderReading() {
       ),
       el('div', {
         class: 'notice',
-        text: '默认快捷键为 Alt+A 双语翻译、Alt+W 整页翻译、Alt+I 输入框翻译、Alt+S 工作台。更多快捷键可在 Edge 扩展快捷键页设置。',
+        text: '浮动 O 按钮可拖动，贴近左右边缘后自动收起。悬停可显示下方设置入口，直接切换服务与阅读样式。',
+      }),
+      el('div', {
+        class: 'hint',
+        text: '快捷键 Alt+A 双语、Alt+W 整页、Alt+I 输入框、Alt+S 工作台。可在 Edge 扩展快捷键页调整。',
       }),
       el('h3', { text: '划词对照服务' }),
       el(
@@ -584,7 +735,9 @@ function renderReading() {
       ),
     ),
   );
+  refresh();
 }
+
 function renderMedia() {
   main.replaceChildren(
     header('图片与字幕', '图片优先交给你选择的视觉模型，字幕与语音按场景分别配置。'),
@@ -830,7 +983,10 @@ async function initialize() {
         text: label,
       }),
     ),
-    el('p', { class: 'hint', text: 'O泡翻译\n个人自用版本 0.1.0' }),
+    el('p', {
+      class: 'hint',
+      text: 'O泡翻译\n个人自用版本 ' + chrome.runtime.getManifest().version,
+    }),
   );
   root.append(
     el(

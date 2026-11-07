@@ -198,7 +198,7 @@ export class PdfBook {
       });
     }
     output.setTitle('O泡翻译');
-    output.setProducer('O泡翻译 0.1.0');
+    output.setProducer('O泡翻译 ' + chrome.runtime.getManifest().version);
     return new Blob([await output.save()], { type: 'application/pdf' });
   }
   clearTranslations() {

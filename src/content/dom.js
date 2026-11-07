@@ -1,7 +1,9 @@
 import { matchesUrl } from '../shared/config.js';
 import { translateItems, rpc, jobId } from '../shared/client.js';
+import { applyTranslationAppearance, translationCss } from '../shared/appearance.js';
+import { paragraphElements, PARAGRAPH_SELECTOR } from './paragraphs.js';
 
-const candidates = 'p,h1,h2,h3,h4,h5,h6,li,td,th,dd,dt,blockquote,figcaption,caption,summary,label';
+const candidates = PARAGRAPH_SELECTOR;
 const excluded =
   'script,style,noscript,pre,code,textarea,input,select,option,[contenteditable]:not([contenteditable=false]),[translate=no],.notranslate,svg,math,mjx-container,[data-opao-ui],.opao-target';
 function safeQuery(root, selector) {
@@ -45,7 +47,9 @@ export function serializeRich(element) {
       nodes.set(id, { node });
       return `{{OPAO${nonce}K${id}}}`;
     }
-    const content = [...node.childNodes].map(walk).join('');
+    const separator =
+      node.isConnected && /flex|grid/.test(getComputedStyle(node).display) ? ' ' : '';
+    const content = [...node.childNodes].map(walk).join(separator);
     if (node === element || node.classList.contains('opao-source')) return content;
     nodes.set(id, { node });
     return `{{OPAO${nonce}S${id}}}${content}{{OPAO${nonce}E${id}}}`;
@@ -104,6 +108,7 @@ export class PageTranslator {
     this.rules = rules;
     this.notify = notify;
     this.records = new Map();
+    this.generatedParagraphs = new Set();
     this.queue = [];
     this.jobs = new Set();
     this.active = false;
@@ -134,7 +139,7 @@ export class PageTranslator {
     this.styleRoots.add(root);
     const style = document.createElement('style');
     style.dataset.opaoUi = 'true';
-    style.textContent = `.opao-source{display:contents}.opao-source.opao-source-hidden{display:none!important}.opao-target{display:block!important;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7;margin:.45em 0 .6em;color:var(--opao-color,inherit);font-size:var(--opao-size,100%);font-weight:400}.opao-target[data-style=line]{border-inline-start:2px solid #086f83;padding-inline-start:.8em}.opao-target[data-style=soft]{background:color-mix(in srgb,currentColor 6%,transparent);padding:.5em .7em;border-radius:6px}.opao-target[data-state=pending]{opacity:.6}.opao-target[data-state=error]{color:#b42335}.opao-target.opao-masked:not(:hover){filter:blur(5px);user-select:none}.opao-target button{font:inherit;padding:.1em .5em;margin-inline-start:.6em;cursor:pointer}.opao-target[dir=rtl]{text-align:right}`;
+    style.textContent = translationCss;
     (root.head || root).append(style);
   }
   observe(root) {
@@ -194,27 +199,13 @@ export class PageTranslator {
       });
     };
     const preferred = rules.flatMap((rule) => rule.selectors || []);
-    const selected = preferred.length
-      ? preferred.flatMap((selector) => safeQuery(root, selector))
-      : [];
-    const elements = selected.length ? selected : safeQuery(root, candidates);
-    for (const selector of rules.flatMap((rule) => rule.additionalSelectors || []))
-      elements.push(...safeQuery(root, selector));
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      const parent = walker.currentNode.parentElement;
-      if (
-        !parent ||
-        parent.closest(candidates) ||
-        parent.closest('.opao-source') ||
-        isExcluded(parent)
-      )
-        continue;
-      if (walker.currentNode.textContent.trim().length < 4 || parent.querySelector(candidates))
-        continue;
-      if (['BODY', 'HTML'].includes(parent.tagName)) continue;
-      elements.push(parent);
-    }
+    const elements = paragraphElements(root, {
+      preferred,
+      additional: rules.flatMap((rule) => rule.additionalSelectors || []),
+      excluded: isExcluded,
+      generated: this.generatedParagraphs,
+      existing: this.records,
+    });
     const result = [];
     const textMinimum = rules.reduce(
       (value, rule) =>
@@ -254,22 +245,26 @@ export class PageTranslator {
     return result;
   }
   updateStyle(record) {
-    record.source.classList.toggle('opao-source-hidden', this.settings.mode === 'translation');
-    if (this.settings.mode === 'translation')
+    if (this.settings.mode === 'translation') {
+      if (!record.source) {
+        record.source = document.createElement('span');
+        record.source.className = 'opao-source';
+        for (const child of [...record.element.childNodes])
+          if (child !== record.target) record.source.append(child);
+        record.element.insertBefore(record.source, record.target);
+      }
+      record.source.classList.add('opao-source-hidden');
       record.source.style.setProperty('display', 'none', 'important');
-    else record.source.style.removeProperty('display');
-    record.target.dataset.style = this.settings.translationStyle;
-    record.target.style.setProperty('--opao-size', this.settings.textSize + '%');
-    if (this.settings.translationColor)
-      record.target.style.setProperty('--opao-color', this.settings.translationColor);
-    else record.target.style.removeProperty('--opao-color');
+    } else if (record.source) {
+      while (record.source.firstChild) record.source.before(record.source.firstChild);
+      record.source.remove();
+      record.source = null;
+    }
+    applyTranslationAppearance(record.target, this.settings);
   }
   makeRecord(element) {
     const rich = serializeRich(element);
     const original = sourceText(element);
-    const source = document.createElement('span');
-    source.className = 'opao-source';
-    while (element.firstChild) source.append(element.firstChild);
     const target = document.createElement('span');
     target.className = 'opao-target';
     target.dataset.state = 'pending';
@@ -279,10 +274,21 @@ export class PageTranslator {
       /^(ar|he|fa|ur)/.test(this.settings.targetLanguage) ? 'rtl' : 'auto',
     );
     target.textContent = '正在翻译…';
-    element.append(source, target);
+    const computed = getComputedStyle(element);
+    const layout =
+      /flex/.test(computed.display) && computed.flexDirection.startsWith('row')
+        ? {
+            value: element.style.getPropertyValue('flex-wrap'),
+            priority: element.style.getPropertyPriority('flex-wrap'),
+          }
+        : null;
+    if (layout) element.style.setProperty('flex-wrap', 'wrap', 'important');
+    element.append(target);
+    if (element.hasAttribute('data-opao-paragraph')) element.dataset.opaoPaired = 'true';
     const record = {
       element,
-      source,
+      source: null,
+      layout,
       target,
       rich,
       original,
@@ -300,7 +306,7 @@ export class PageTranslator {
         this.records.delete(element);
         continue;
       }
-      if (!record.source.isConnected || sourceText(record.source) !== record.original) {
+      if (!record.target.isConnected || sourceText(record.element) !== record.original) {
         this.unwrap(record);
         this.records.delete(element);
       }
@@ -346,7 +352,7 @@ export class PageTranslator {
       if (generation !== this.generation) return;
       for (const translated of translations) {
         const record = records.find((item) => item.id === translated.id);
-        if (!record || !record.target.isConnected || sourceText(record.source) !== record.original)
+        if (!record || !record.target.isConnected || sourceText(record.element) !== record.original)
           continue;
         record.target.replaceChildren(record.rich.render(translated.text));
         record.target.dataset.state = 'done';
@@ -374,11 +380,21 @@ export class PageTranslator {
     }
   }
   unwrap(record) {
-    if (record.source.parentNode) {
+    if (record.source?.parentNode) {
       while (record.source.firstChild) record.source.before(record.source.firstChild);
       record.source.remove();
     }
     record.target.remove();
+    if (
+      record.layout &&
+      record.element.style.getPropertyValue('flex-wrap') === 'wrap' &&
+      record.element.style.getPropertyPriority('flex-wrap') === 'important'
+    ) {
+      if (record.layout.value)
+        record.element.style.setProperty('flex-wrap', record.layout.value, record.layout.priority);
+      else record.element.style.removeProperty('flex-wrap');
+    }
+    delete record.element.dataset.opaoPaired;
   }
   restore() {
     this.active = false;
@@ -388,6 +404,13 @@ export class PageTranslator {
     for (const id of this.jobs) rpc('cancel', { jobId: id }).catch(() => {});
     for (const record of this.records.values()) this.unwrap(record);
     this.records.clear();
+    for (const wrapper of [...this.generatedParagraphs].reverse()) {
+      if (wrapper.parentNode) {
+        while (wrapper.firstChild) wrapper.before(wrapper.firstChild);
+        wrapper.remove();
+      }
+    }
+    this.generatedParagraphs.clear();
     if (this.originalTitle !== undefined) {
       document.title = this.originalTitle;
       this.originalTitle = undefined;
@@ -417,7 +440,12 @@ export class PageTranslator {
   }
   async translateElement(element) {
     if (this.blocked() || element.closest(excluded)) return;
-    const target = element.closest(candidates) || element;
+    const target =
+      this.collect(this.root(this.whole)).find(
+        (candidate) => candidate === element || candidate.contains(element),
+      ) ||
+      element.closest(candidates) ||
+      element;
     const record = this.records.get(target) || this.makeRecord(target);
     this.viewport.unobserve(target);
     this.enqueue(record);
@@ -429,7 +457,12 @@ export class PageTranslator {
   toggleMask() {
     for (const record of this.records.values()) record.target.classList.toggle('opao-masked');
   }
-  update(settings) {
+  update(settings, translationChanged = true) {
+    if (!translationChanged) {
+      this.settings = settings;
+      for (const record of this.records.values()) this.updateStyle(record);
+      return;
+    }
     const active = this.active,
       whole = this.whole;
     this.restore();

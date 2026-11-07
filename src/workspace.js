@@ -1213,6 +1213,11 @@ async function initialize() {
   if (params.get('error')) status(message, params.get('error'), true);
   chrome.runtime.onMessage.addListener((event) => {
     if (event.channel !== 'opao-settings') return false;
+    if (event.translationChanged === false) {
+      settings = event.settings;
+      applyTheme(settings);
+      return false;
+    }
     stop();
     settings = event.settings;
     applyTheme(settings);
