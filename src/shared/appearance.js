@@ -105,6 +105,9 @@ export const translationCss = `
 .opao-target[data-state="pending"] {
   opacity: 0.6;
 }
+.opao-target[data-layout="navigation"] {
+  margin: min(var(--opao-gap, 0.65em), 0.25em) 0 0;
+}
 .opao-target[data-state="error"] {
   color: #b42335;
 }
