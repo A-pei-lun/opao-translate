@@ -118,7 +118,7 @@ export class PageTranslator {
     this.notify = notify;
     this.records = new Map();
     this.generatedParagraphs = new Set();
-    this.clippedLinks = new Map();
+    this.layoutStyles = new Map();
     this.queue = [];
     this.jobs = new Set();
     this.active = false;
@@ -304,39 +304,92 @@ export class PageTranslator {
       record.source = null;
     }
     applyTranslationAppearance(record.target, this.settings);
+    this.updateLayout(record);
   }
-  makeRecord(element) {
+  setLayoutStyles(node, values) {
+    let saved = this.layoutStyles.get(node);
+    if (!saved) {
+      saved = { hadStyle: node.hasAttribute('style'), properties: new Map() };
+      this.layoutStyles.set(node, saved);
+    }
+    for (const [key, after] of Object.entries(values)) {
+      const value = node.style.getPropertyValue(key);
+      const priority = node.style.getPropertyPriority(key);
+      const previous = saved.properties.get(key);
+      const owned = previous && value === previous.after && priority === 'important';
+      if (!owned) saved.properties.set(key, { value, priority, after });
+      if (!owned || value !== after)
+        node.style.setProperty(key, after, 'important');
+      // CSSOM canonicalizes values (for example min-width: 0 becomes 0px).
+      saved.properties.get(key).after = node.style.getPropertyValue(key);
+    }
+  }
+  updateLayout({ element, target }) {
+    const computed = getComputedStyle(element);
+    if (/flex/.test(computed.display) && computed.flexDirection.startsWith('row'))
+      this.setLayoutStyles(element, { 'flex-wrap': 'wrap' });
     const link = element.closest('a');
     if (link) {
       for (let node = element; node; node = node.parentElement) {
         const computed = getComputedStyle(node);
         if (
-          (/hidden|clip/.test(computed.overflow + computed.overflowY) ||
-            Number.parseInt(computed.webkitLineClamp) > 0) &&
-          !this.clippedLinks.has(node)
+          /hidden|clip/.test(computed.overflow + computed.overflowY) ||
+          Number.parseInt(computed.webkitLineClamp) > 0
         ) {
-          const properties = [
-            'height',
-            'max-height',
-            'overflow',
-            '-webkit-line-clamp',
-            'white-space',
-          ];
-          const hadStyle = node.hasAttribute('style');
-          const before = properties.map((key) => [
-            key,
-            node.style.getPropertyValue(key),
-            node.style.getPropertyPriority(key),
-          ]);
-          const after = ['auto', 'none', 'visible', 'unset', 'normal'];
-          properties.forEach((key, index) =>
-            node.style.setProperty(key, after[index], 'important'),
-          );
-          this.clippedLinks.set(node, { before, after, hadStyle });
+          this.setLayoutStyles(node, {
+            height: 'auto',
+            'max-height': 'none',
+            overflow: 'visible',
+            '-webkit-line-clamp': 'unset',
+            'white-space': 'normal',
+          });
         }
         if (node === link) break;
       }
     }
+    const navigation = element.closest(
+      'nav,aside,[role=navigation],[role=menu],[role=menubar],' +
+        '[data-sidebar=sidebar],[data-sidebar=content],[data-sidebar=menu]',
+    );
+    if (!navigation || navigation === element) return;
+    target.dataset.layout = 'navigation';
+    const control = element.closest('a,button,[role=menuitem],[role=treeitem]');
+    let row = control && navigation.contains(control) ? control : element;
+    if (
+      row === element &&
+      element.hasAttribute('data-opao-paragraph') &&
+      element.parentElement !== navigation &&
+      !element.parentElement.matches('ul,ol,li')
+    )
+      row = element.parentElement;
+    // Grow the text row, leaving the sidebar's viewport and scroll owner intact.
+    for (let node = element; node && node !== navigation; node = node.parentElement) {
+      this.setLayoutStyles(node, {
+        height: 'auto',
+        'max-height': 'none',
+        'min-width': '0',
+        'max-width': '100%',
+        overflow: 'visible',
+        'white-space': 'normal',
+        'overflow-wrap': 'anywhere',
+        'flex-shrink': '0',
+      });
+      const style = getComputedStyle(node);
+      if (/flex/.test(style.display) && style.flexDirection.startsWith('row'))
+        this.setLayoutStyles(node, { 'flex-wrap': 'wrap', 'align-items': 'flex-start' });
+      const parent = node.parentElement;
+      const parentStyle = parent && getComputedStyle(parent);
+      if (
+        node !== row &&
+        /flex/.test(parentStyle?.display) &&
+        parentStyle.flexDirection.startsWith('row') &&
+        [...parent.children].some((child) => child !== node && child.matches('svg,img'))
+      )
+        this.setLayoutStyles(node, { 'flex-grow': '1', 'flex-shrink': '1', 'flex-basis': '0%' });
+      if (node === row) break;
+    }
+  }
+  makeRecord(element) {
     const rich = serializeRich(element);
     const original = sourceText(element);
     const target = document.createElement('span');
@@ -348,21 +401,11 @@ export class PageTranslator {
       /^(ar|he|fa|ur)/.test(this.settings.targetLanguage) ? 'rtl' : 'auto',
     );
     target.textContent = '正在翻译…';
-    const computed = getComputedStyle(element);
-    const layout =
-      /flex/.test(computed.display) && computed.flexDirection.startsWith('row')
-        ? {
-            value: element.style.getPropertyValue('flex-wrap'),
-            priority: element.style.getPropertyPriority('flex-wrap'),
-          }
-        : null;
-    if (layout) element.style.setProperty('flex-wrap', 'wrap', 'important');
     element.append(target);
     if (element.hasAttribute('data-opao-paragraph')) element.dataset.opaoPaired = 'true';
     const record = {
       element,
       source: null,
-      layout,
       target,
       rich,
       original,
@@ -461,15 +504,6 @@ export class PageTranslator {
       record.source.remove();
     }
     record.target.remove();
-    if (
-      record.layout &&
-      record.element.style.getPropertyValue('flex-wrap') === 'wrap' &&
-      record.element.style.getPropertyPriority('flex-wrap') === 'important'
-    ) {
-      if (record.layout.value)
-        record.element.style.setProperty('flex-wrap', record.layout.value, record.layout.priority);
-      else record.element.style.removeProperty('flex-wrap');
-    }
     delete record.element.dataset.opaoPaired;
   }
   restore() {
@@ -480,19 +514,17 @@ export class PageTranslator {
     for (const id of this.jobs) rpc('cancel', { jobId: id }).catch(() => {});
     for (const record of this.records.values()) this.unwrap(record);
     this.records.clear();
-    for (const [node, { before, after, hadStyle }] of this.clippedLinks) {
-      before.forEach(([key, value, priority], index) => {
+    for (const [node, { properties }] of this.layoutStyles) {
+      for (const [key, { value, priority, after }] of properties) {
         if (
-          node.style.getPropertyValue(key) !== after[index] ||
+          node.style.getPropertyValue(key) !== after ||
           node.style.getPropertyPriority(key) !== 'important'
         )
-          return;
+          continue;
         if (value) node.style.setProperty(key, value, priority);
         else node.style.removeProperty(key);
-      });
-      if (!hadStyle && !node.style.length) node.removeAttribute('style');
+      }
     }
-    this.clippedLinks.clear();
     for (const wrapper of [...this.generatedParagraphs].reverse()) {
       if (wrapper.parentNode) {
         while (wrapper.firstChild) wrapper.before(wrapper.firstChild);
@@ -500,6 +532,9 @@ export class PageTranslator {
       }
     }
     this.generatedParagraphs.clear();
+    for (const [node, { hadStyle }] of this.layoutStyles)
+      if (!hadStyle && node.getAttribute('style') === '') node.removeAttribute('style');
+    this.layoutStyles.clear();
     if (this.originalTitle !== undefined) {
       document.title = this.originalTitle;
       this.originalTitle = undefined;

@@ -43,11 +43,16 @@ function query(root, selector) {
   }
 }
 function elementMatches(node, selector) {
-  return node.nodeType === Node.ELEMENT_NODE && node.matches(selector);
+  return node?.nodeType === Node.ELEMENT_NODE && node.matches(selector);
 }
 function significantSibling(node, direction) {
   let next = node[direction];
-  while (next?.nodeType === Node.TEXT_NODE && !next.textContent.trim()) next = next[direction];
+  while (
+    next &&
+    (next.nodeType === Node.COMMENT_NODE ||
+      (next.nodeType === Node.TEXT_NODE && !next.textContent.trim()))
+  )
+    next = next[direction];
   return next;
 }
 function isParagraphBreak(node) {
@@ -142,13 +147,16 @@ export function paragraphElements(
   for (const selector of additional) for (const scope of query(root, selector)) collectScope(scope);
   const elements = [];
   const wrapRuns = (container) => {
+    // An ancestor can be discovered after a complete child paragraph. Keep that
+    // child intact so generated wrappers cannot make the later nested check skip it.
+    if (elements.includes(container) || existing.has(container)) return;
     let run = [];
     const flush = () => {
       const content = run
         .map((node) =>
           node.nodeType === Node.TEXT_NODE
             ? node.textContent
-            : node.matches('code,kbd,math,svg,mjx-container')
+            : node.nodeType === Node.COMMENT_NODE || node.matches('code,kbd,math,svg,mjx-container')
               ? ''
               : node.textContent,
         )
@@ -177,7 +185,8 @@ export function paragraphElements(
           wrapRuns(node);
         continue;
       }
-      if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.ELEMENT_NODE) run.push(node);
+      if ([Node.TEXT_NODE, Node.ELEMENT_NODE, Node.COMMENT_NODE].includes(node.nodeType))
+        run.push(node);
     }
     flush();
   };
