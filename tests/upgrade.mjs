@@ -7,7 +7,7 @@ import { chromium } from 'playwright-core';
 const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const project = path.dirname(source);
 const version = JSON.parse(await fs.readFile(path.join(source, 'manifest.json'), 'utf8')).version;
-const fromVersion = '0.1.2';
+const fromVersion = '0.1.3';
 if (!/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Invalid upgrade version');
 const evidence = path.resolve(project, '04_验证', version);
 const profile = path.join(evidence, '升级测试配置');
