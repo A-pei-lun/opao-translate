@@ -803,6 +803,15 @@ function renderReading() {
       ),
       fontSettings,
       el(
+        'div',
+        { class: 'compact-stack' },
+        check('繁体中文转简体后替换原文', settings, 'replaceTraditionalChinese'),
+        el('p', {
+          class: 'hint',
+          text: '目标语言为简体中文时生效。已是简体中文的段落自动跳过；开启后，繁体段落在本地转为简体并直接替换，保留链接与格式，可恢复原文。关闭时繁体仍按默认阅读模式翻译。',
+        }),
+      ),
+      el(
         'details',
         { class: 'reading-details' },
         el('summary', { text: '预览全部译文样式' }),
