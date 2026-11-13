@@ -16,6 +16,7 @@ import {
   parseVision,
 } from './protocols.js';
 import { cacheGet, cacheSet, trimCache, cacheStats, clearCache, digest } from './cache.js';
+import { TranslationStreamParser, previewText } from '../shared/streaming.js';
 
 const jobs = new Map();
 const queue = [];
@@ -203,6 +204,26 @@ function translationSystem(settings, profile, payload) {
 }
 async function translate(settings, payload, signal, emit) {
   const profile = resolveProfile(settings, payload.role, payload.profileId);
+  const progressive = payload.progressive === true;
+  const streamProfile = progressive && ['chat', 'responses', 'claude', 'gemini'].includes(profile.protocol)
+    ? { ...profile, stream:true } : profile;
+  let sequence = 0;
+  const publish = (record) => {
+    if (!progressive || signal.aborted) return;
+    const pieces = [];
+    for (let index = 0; index < record.pieces.length; index++) {
+      if (record.pieces[index] !== null) pieces.push(record.pieces[index]);
+      else {
+        pieces.push(record.previews[index] || '');
+        break;
+      }
+    }
+    const text = previewText(joinTranslatedParts(pieces, payload.targetLanguage || settings.targetLanguage));
+    if (record.lastPreview === text) return;
+    record.lastPreview = text;
+    if (record.streamed || !text)
+      emit({ type:'translation-preview', sequence:++sequence, itemId:record.id, text });
+  };
   if (!Array.isArray(payload.items) || payload.items.length > 300)
     throw new Error('单次翻译需要 1 到 300 个文本段落');
   const expanded = [];
@@ -223,7 +244,7 @@ async function translate(settings, payload, signal, emit) {
       throw new Error('段落数据无效或过长，请先分段');
     const id = String(item.id ?? index);
     const chunks = splitText(item.text, profile.maxChars);
-    const record = { id, pieces: new Array(chunks.length).fill('') };
+    const record = { id, pieces: new Array(chunks.length).fill(null), previews:[] };
     output.push(record);
     for (const [partIndex, text] of chunks.entries()) {
       if (!text.trim()) {
@@ -278,11 +299,39 @@ async function translate(settings, payload, signal, emit) {
           'translate',
           async (key) => {
             const source = items.map(({ id, text }) => ({ id, text }));
-            const options = { key, signal, onToken: (text) => emit({ type: 'stream', text }) };
+            const parser = new TranslationStreamParser(source.map((item) => item.id));
+            const byId = new Map(items.map((item) => [item.id, item]));
+            const dirty = new Set();
+            let seen = 0, timer;
+            const flush = () => {
+              clearTimeout(timer);
+              timer = null;
+              for (const record of dirty) publish(record);
+              dirty.clear();
+            };
+            // A retry replaces only its own unfinished pieces. Other parallel
+            // batches keep their validated content and independent previews.
+            for (const item of items) {
+              item.original.previews[item.partIndex] = '';
+              publish(item.original);
+            }
+            const options = { key, signal, onToken: (text) => {
+              if (signal.aborted) return;
+              if (!progressive) { emit({ type:'stream', text }); return; }
+              for (const partial of parser.feed(text.slice(seen))) {
+                const item = byId.get(partial.id);
+                item.original.streamed = true;
+                item.original.previews[item.partIndex] = item.leading + item.restore(partial.text);
+                dirty.add(item.original);
+              }
+              seen = text.length;
+              if (dirty.size && !timer) timer = setTimeout(flush, 45);
+            } };
             let translated;
+            try {
             if (TRADITIONAL_PROTOCOLS.includes(profile.protocol))
               translated = await traditionalTranslate(
-                profile,
+                streamProfile,
                 source,
                 payload.sourceLanguage || settings.sourceLanguage,
                 payload.targetLanguage || settings.targetLanguage,
@@ -290,7 +339,7 @@ async function translate(settings, payload, signal, emit) {
               );
             else {
               const text = await generate(
-                profile,
+                streamProfile,
                 {
                   system: translationSystem(settings, profile, payload),
                   prompt: JSON.stringify({
@@ -308,21 +357,33 @@ async function translate(settings, payload, signal, emit) {
                 else throw error;
               }
             }
+            // Validate the complete batch before caching or accepting any item.
             for (const result of translated) {
-              const item = items.find((value) => value.id === result.id);
-              if (
-                !item ||
-                typeof result.text !== 'string' ||
-                (item.text.trim() && !result.text.trim())
-              )
+              const item = byId.get(result.id);
+              if (!item || typeof result.text !== 'string' ||
+                  (item.text.trim() && !result.text.trim()))
                 throw new Error('翻译接口返回了空译文或无效段落');
               validateTokens(item.text, result.text);
+            }
+            for (const result of translated) {
+              const item = byId.get(result.id);
               const text = item.leading + item.restore(result.text).trim() + item.trailing;
               item.original.pieces[item.partIndex] = text;
+              dirty.add(item.original);
               if (settings.cache) await cacheSet(item.key, text).catch(() => {});
             }
+            flush();
             completed += items.length;
             emit({ type: 'batch', completed, total: expanded.length });
+            } catch (error) {
+              // Do not leave a failed attempt's last text visible during retry backoff.
+              for (const item of items) {
+                item.original.previews[item.partIndex] = '';
+                dirty.add(item.original);
+              }
+              flush();
+              throw error;
+            } finally { clearTimeout(timer); }
           },
           payload.stopOnTimeout === true,
           { page: payload.diagnosticPage, site: payload.diagnosticSite, jobId: payload.jobId },

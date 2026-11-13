@@ -209,8 +209,10 @@ export async function readEventStream(response, protocol, onToken) {
     } catch {
       throw new Error('接口返回了无效的流式 JSON');
     }
-    if (event.error || event.type === 'error')
-      throw new Error(event.error?.message || event.message || '模型流式输出失败');
+    if (event.error || event.type === 'error' ||
+        ['response.failed', 'response.incomplete'].includes(event.type))
+      throw new Error(event.error?.message || event.response?.error?.message ||
+        event.message || '模型流式输出未完整结束，请重试');
     let delta =
       event.type === 'response.output_text.delta'
         ? event.delta
@@ -240,6 +242,7 @@ export async function readEventStream(response, protocol, onToken) {
     if (buffer.trim()) frame(buffer);
     return output;
   } finally {
+    if (!done) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
