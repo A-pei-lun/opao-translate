@@ -2,6 +2,7 @@ import { matchesUrl } from '../shared/config.js';
 import { translateItems, rpc, jobId } from '../shared/client.js';
 import { applyTranslationAppearance, translationCss } from '../shared/appearance.js';
 import { paragraphElements, PARAGRAPH_SELECTOR } from './paragraphs.js';
+import { StreamView } from './stream-view.js';
 
 const candidates = PARAGRAPH_SELECTOR;
 const excluded =
@@ -407,6 +408,7 @@ export class PageTranslator {
       element,
       source: null,
       target,
+      view: new StreamView(target),
       rich,
       original,
       state: 'new',
@@ -420,6 +422,7 @@ export class PageTranslator {
     if (!this.active || this.blocked()) return;
     for (const [element, record] of this.records) {
       if (!element.isConnected) {
+        record.view.dispose();
         this.records.delete(element);
         continue;
       }
@@ -438,8 +441,7 @@ export class PageTranslator {
   enqueue(record) {
     if (!['new', 'error'].includes(record.state)) return;
     record.state = 'queued';
-    record.target.dataset.state = 'pending';
-    record.target.textContent = '正在翻译…';
+    record.view.reset();
     this.queue.push(record);
     this.pump();
   }
@@ -454,6 +456,9 @@ export class PageTranslator {
       );
     const id = jobId();
     this.jobs.add(id);
+    const valid = (record) => generation === this.generation &&
+      this.records.get(record.element) === record && record.target.isConnected &&
+      sourceText(record.element) === record.original;
     try {
       if (!records.length) return;
       const translations = await translateItems(
@@ -464,22 +469,32 @@ export class PageTranslator {
           sourceLanguage: this.settings.sourceLanguage,
           context: document.title,
           domain: location.hostname,
+          progressive: true,
+          onPreview: (event) => {
+            if (generation !== this.generation) return;
+            if (event.type === 'translation-reset') {
+              for (const record of records) if (valid(record)) record.view.reset();
+            } else if (event.type === 'translation-preview') {
+              const record = records.find((item) => item.id === event.itemId);
+              if (record && valid(record)) record.view.show(event.text);
+            }
+          },
         },
       );
       if (generation !== this.generation) return;
-      for (const translated of translations) {
+      await Promise.all(translations.map(async (translated) => {
         const record = records.find((item) => item.id === translated.id);
-        if (!record || !record.target.isConnected || sourceText(record.element) !== record.original)
-          continue;
+        if (!record || !valid(record)) return;
         const atBottom = bottomScrollContainers(record.element);
-        record.target.replaceChildren(record.rich.render(translated.text));
-        record.target.dataset.state = 'done';
+        if (!(await record.view.finish(record.rich.render(translated.text))) || !valid(record)) return;
         record.state = 'done';
         for (const container of atBottom) container.scrollTop = container.scrollHeight;
-      }
+      }));
     } catch (error) {
       if (generation !== this.generation) return;
       for (const record of records) {
+        if (!valid(record)) continue;
+        record.view.reset();
         record.state = 'error';
         record.target.dataset.state = 'error';
         record.target.textContent = error.message;
@@ -499,6 +514,7 @@ export class PageTranslator {
     }
   }
   unwrap(record) {
+    record.view.dispose();
     if (record.source?.parentNode) {
       while (record.source.firstChild) record.source.before(record.source.firstChild);
       record.source.remove();
