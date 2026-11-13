@@ -26,6 +26,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         owner: message.owner,
         jobId: message.payload?.jobId,
         data,
+        progressToken: message.payload?.progressToken,
       })
       .catch(() => {});
   active++;

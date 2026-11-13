@@ -321,7 +321,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     if (message.kind === 'progress') {
-      const data = { channel: 'opao-progress', jobId: message.jobId, ...message.data };
+      const data = { channel: 'opao-progress', jobId: message.jobId, ...message.data,
+        progressToken: message.progressToken };
       const match = /^tab:(\d+):(\d+)$/.exec(message.owner);
       if (match)
         chrome.tabs
