@@ -2,6 +2,8 @@ import { matchesUrl } from '../shared/config.js';
 import { translateItems, rpc, jobId } from '../shared/client.js';
 import { applyTranslationAppearance, translationCss } from '../shared/appearance.js';
 import { paragraphElements, PARAGRAPH_SELECTOR } from './paragraphs.js';
+import { StreamView } from './stream-view.js';
+import { chineseAction, simplifyChinese, simplifyChineseParts } from './chinese.js';
 
 const candidates = PARAGRAPH_SELECTOR;
 const excluded =
@@ -43,7 +45,7 @@ function safeClone(element, deep) {
   for (const node of clone.querySelectorAll('script,style,iframe,object,embed')) node.remove();
   return clone;
 }
-export function serializeRich(element) {
+export function serializeRich(element, preserve = () => false) {
   const nonce = crypto.randomUUID().slice(0, 8);
   const nodes = new Map();
   let sequence = 0;
@@ -52,7 +54,8 @@ export function serializeRich(element) {
     if (node.nodeType !== Node.ELEMENT_NODE || node.matches('.opao-target,[data-opao-ui]'))
       return '';
     const id = sequence++;
-    if (node.matches('code,pre,math,svg,mjx-container,img,br,kbd,[translate=no]')) {
+    if (node.matches('code,pre,math,svg,mjx-container,img,br,kbd,[translate=no]') ||
+        (node !== element && preserve(node))) {
       nodes.set(id, { node });
       return `{{OPAO${nonce}K${id}}}`;
     }
@@ -119,6 +122,7 @@ export class PageTranslator {
     this.records = new Map();
     this.generatedParagraphs = new Set();
     this.layoutStyles = new Map();
+    this.localReplacements = new Map();
     this.queue = [];
     this.jobs = new Set();
     this.active = false;
@@ -205,6 +209,7 @@ export class PageTranslator {
         }
       });
     };
+    this.isExcluded = isExcluded;
     const preferred = rules.flatMap((rule) => rule.selectors || []);
     const counts = {
       event: 'scan',
@@ -328,7 +333,7 @@ export class PageTranslator {
     const computed = getComputedStyle(element);
     if (/flex/.test(computed.display) && computed.flexDirection.startsWith('row'))
       this.setLayoutStyles(element, { 'flex-wrap': 'wrap' });
-    const link = element.closest('a');
+    const link = element.closest('a,button,[role=button],[role=tab]');
     if (link) {
       for (let node = element; node; node = node.parentElement) {
         const computed = getComputedStyle(node);
@@ -353,7 +358,7 @@ export class PageTranslator {
     );
     if (!navigation || navigation === element) return;
     target.dataset.layout = 'navigation';
-    const control = element.closest('a,button,[role=menuitem],[role=treeitem]');
+    const control = element.closest('a,button,[role=button],[role=menuitem],[role=treeitem]');
     let row = control && navigation.contains(control) ? control : element;
     if (
       row === element &&
@@ -390,7 +395,7 @@ export class PageTranslator {
     }
   }
   makeRecord(element) {
-    const rich = serializeRich(element);
+    const rich = serializeRich(element, this.isExcluded);
     const original = sourceText(element);
     const target = document.createElement('span');
     target.className = 'opao-target';
@@ -407,6 +412,7 @@ export class PageTranslator {
       element,
       source: null,
       target,
+      view: new StreamView(target),
       rich,
       original,
       state: 'new',
@@ -416,10 +422,39 @@ export class PageTranslator {
     this.updateStyle(record);
     return record;
   }
+  chineseAction(element) {
+    const nodes = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const parent = walker.currentNode.parentElement;
+      if (!parent || parent.closest('code,pre,kbd,.opao-target,[data-opao-ui]') ||
+          this.isExcluded?.(parent)) continue;
+      nodes.push(walker.currentNode);
+    }
+    const action = chineseAction(nodes.map((node) => node.textContent).join(''),
+      this.settings, element.closest('[lang]')?.lang || '');
+    if (action === 'replace') {
+      const converted = simplifyChineseParts(nodes.map((node) => node.textContent));
+      for (const [index, node] of nodes.entries()) {
+        const before = node.textContent;
+        const after = converted[index];
+        if (before === after) continue;
+        const saved = this.localReplacements.get(node);
+        this.localReplacements.set(node, {
+          before: saved?.after === before ? saved.before : before, after,
+        });
+        node.textContent = after;
+      }
+    }
+    return action;
+  }
   scan() {
     if (!this.active || this.blocked()) return;
+    for (const [node, saved] of this.localReplacements)
+      if (!node.isConnected || node.textContent !== saved.after) this.localReplacements.delete(node);
     for (const [element, record] of this.records) {
       if (!element.isConnected) {
+        record.view.dispose();
         this.records.delete(element);
         continue;
       }
@@ -430,6 +465,7 @@ export class PageTranslator {
     }
     for (const element of this.collect(this.root(this.whole))) {
       if (this.records.has(element)) continue;
+      if (this.chineseAction(element) !== 'translate') continue;
       const record = this.makeRecord(element);
       if (this.settings.lazy && !this.whole) this.viewport.observe(element);
       else this.enqueue(record);
@@ -438,8 +474,7 @@ export class PageTranslator {
   enqueue(record) {
     if (!['new', 'error'].includes(record.state)) return;
     record.state = 'queued';
-    record.target.dataset.state = 'pending';
-    record.target.textContent = '正在翻译…';
+    record.view.reset();
     this.queue.push(record);
     this.pump();
   }
@@ -454,6 +489,9 @@ export class PageTranslator {
       );
     const id = jobId();
     this.jobs.add(id);
+    const valid = (record) => generation === this.generation &&
+      this.records.get(record.element) === record && record.target.isConnected &&
+      sourceText(record.element) === record.original;
     try {
       if (!records.length) return;
       const translations = await translateItems(
@@ -464,22 +502,32 @@ export class PageTranslator {
           sourceLanguage: this.settings.sourceLanguage,
           context: document.title,
           domain: location.hostname,
+          progressive: true,
+          onPreview: (event) => {
+            if (generation !== this.generation) return;
+            if (event.type === 'translation-reset') {
+              for (const record of records) if (valid(record)) record.view.reset();
+            } else if (event.type === 'translation-preview') {
+              const record = records.find((item) => item.id === event.itemId);
+              if (record && valid(record)) record.view.show(event.text);
+            }
+          },
         },
       );
       if (generation !== this.generation) return;
-      for (const translated of translations) {
+      await Promise.all(translations.map(async (translated) => {
         const record = records.find((item) => item.id === translated.id);
-        if (!record || !record.target.isConnected || sourceText(record.element) !== record.original)
-          continue;
+        if (!record || !valid(record)) return;
         const atBottom = bottomScrollContainers(record.element);
-        record.target.replaceChildren(record.rich.render(translated.text));
-        record.target.dataset.state = 'done';
+        if (!(await record.view.finish(record.rich.render(translated.text))) || !valid(record)) return;
         record.state = 'done';
         for (const container of atBottom) container.scrollTop = container.scrollHeight;
-      }
+      }));
     } catch (error) {
       if (generation !== this.generation) return;
       for (const record of records) {
+        if (!valid(record)) continue;
+        record.view.reset();
         record.state = 'error';
         record.target.dataset.state = 'error';
         record.target.textContent = error.message;
@@ -499,6 +547,7 @@ export class PageTranslator {
     }
   }
   unwrap(record) {
+    record.view.dispose();
     if (record.source?.parentNode) {
       while (record.source.firstChild) record.source.before(record.source.firstChild);
       record.source.remove();
@@ -514,6 +563,9 @@ export class PageTranslator {
     for (const id of this.jobs) rpc('cancel', { jobId: id }).catch(() => {});
     for (const record of this.records.values()) this.unwrap(record);
     this.records.clear();
+    for (const [node, saved] of this.localReplacements)
+      if (node.isConnected && node.textContent === saved.after) node.textContent = saved.before;
+    this.localReplacements.clear();
     for (const [node, { properties }] of this.layoutStyles) {
       for (const [key, { value, priority, after }] of properties) {
         if (
@@ -548,7 +600,13 @@ export class PageTranslator {
     this.scan();
     if (this.settings.translateTitle) {
       const title = document.title;
+      const action = chineseAction(title, this.settings, document.documentElement.lang);
+      if (action === 'skip') return;
       this.originalTitle = title;
+      if (action === 'replace') {
+        document.title = simplifyChinese(title);
+        return;
+      }
       const id = jobId();
       this.jobs.add(id);
       try {
@@ -570,6 +628,7 @@ export class PageTranslator {
       ) ||
       element.closest(candidates) ||
       element;
+    if (this.chineseAction(target) !== 'translate') return;
     const record = this.records.get(target) || this.makeRecord(target);
     this.viewport.unobserve(target);
     this.enqueue(record);

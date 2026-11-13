@@ -37,7 +37,10 @@ const phrasingTags = new Set([
 const controls = 'input,textarea,select,button,[contenteditable]:not([contenteditable=false])';
 function query(root, selector) {
   try {
-    return [...root.querySelectorAll(selector)];
+    return [
+      ...(root.nodeType === Node.ELEMENT_NODE && root.matches(selector) ? [root] : []),
+      ...root.querySelectorAll(selector),
+    ];
   } catch {
     return [];
   }
@@ -86,6 +89,7 @@ export function paragraphElements(
     if (node.matches('[data-opao-ui],.opao-target,' + controls) || node.querySelector(controls))
       return true;
     if (node.matches('code,kbd,math,svg,mjx-container')) return false;
+    if (excluded(node)) return true;
     return (
       node.matches(PARAGRAPH_SELECTOR) ||
       !['inline', 'contents', 'inline-block', 'inline-flex', 'inline-grid'].includes(display(node))
