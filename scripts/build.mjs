@@ -84,6 +84,7 @@ const licenseNames = [
   'tslib',
   '@pdf-lib/standard-fonts',
   '@pdf-lib/upng',
+  'opencc-js',
 ];
 const notices = [];
 for (const dependency of licenseNames) {
@@ -100,6 +101,8 @@ for (const dependency of licenseNames) {
     /* Some transitive packages may be hoisted differently. */
   }
 }
+notices.push('\n\n# opencc-js / THIRD_PARTY_LICENSES.md\n\n' +
+  await fs.readFile(path.join(root, 'node_modules/opencc-js/THIRD_PARTY_LICENSES.md'), 'utf8'));
 await fs.writeFile(path.join(output, 'THIRD_PARTY_NOTICES.txt'), notices.join('\n'));
 const entries = {};
 const hashes = [];
