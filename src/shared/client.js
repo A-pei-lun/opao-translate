@@ -1,6 +1,7 @@
 import { PageServiceRouter } from './failover.js';
 
 let pageRouter;
+const translationProgress = new Map();
 export function configurePageRouting(settings, onChange, forceReset = false) {
   pageRouter ||= new PageServiceRouter(rawRpc, () => location.href, onChange);
   pageRouter.configure(settings, forceReset);
@@ -17,6 +18,20 @@ export function rpc(kind, payload = {}) {
   return rawRpc(kind, payload);
 }
 function rawRpc(kind, payload = {}) {
+  const handler = kind === 'translate' && translationProgress.get(payload.jobId);
+  let unsubscribe;
+  if (handler) {
+    const progressToken = crypto.randomUUID();
+    payload = { ...payload, progressToken };
+    let sequence = 0;
+    handler({ type:'translation-reset' });
+    unsubscribe = onProgress(payload.jobId, (event) => {
+      if (event.type !== 'translation-preview' || event.progressToken !== progressToken ||
+          !Number.isSafeInteger(event.sequence) || event.sequence <= sequence) return;
+      sequence = event.sequence;
+      handler(event);
+    });
+  }
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage({ channel: 'opao', kind, ...payload }, (response) => {
       if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
@@ -29,7 +44,7 @@ function rawRpc(kind, payload = {}) {
         );
       resolve(response.data);
     });
-  });
+  }).finally(() => unsubscribe?.());
 }
 export function jobId() {
   return crypto.randomUUID();
@@ -51,20 +66,28 @@ export async function translateItems(
     context = '',
     domain = '',
     fallback = true,
+    progressive = false,
+    onPreview,
     jobId: id = jobId(),
   } = {},
 ) {
-  return rpc('translate', {
-    items,
-    role,
-    profileId,
-    targetLanguage,
-    sourceLanguage,
-    context,
-    domain,
-    fallback,
-    jobId: id,
-  });
+  if (onPreview) translationProgress.set(id, onPreview);
+  try {
+    return await rpc('translate', {
+      items,
+      role,
+      profileId,
+      targetLanguage,
+      sourceLanguage,
+      context,
+      domain,
+      fallback,
+      progressive,
+      jobId: id,
+    });
+  } finally {
+    translationProgress.delete(id);
+  }
 }
 export function applyTheme(settings) {
   document.documentElement.dataset.theme = settings.theme || 'system';

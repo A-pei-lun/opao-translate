@@ -105,6 +105,25 @@ export const translationCss = `
 .opao-target[data-state="pending"] {
   opacity: 0.6;
 }
+.opao-stream-preview {
+  display: block !important;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.opao-target[data-state="streaming"] .opao-stream-preview::after {
+  content: '';
+  display: inline-block;
+  width: 2px;
+  height: 0.85em;
+  margin-inline-start: 0.18em;
+  background: currentColor;
+  vertical-align: -0.05em;
+  animation: opao-stream-caret 1s step-end infinite;
+}
+@keyframes opao-stream-caret { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .opao-stream-preview::after { animation: none !important; }
+}
 .opao-target[data-layout="navigation"] {
   margin: min(var(--opao-gap, 0.65em), 0.25em) 0 0;
 }
