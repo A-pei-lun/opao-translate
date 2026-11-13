@@ -75,6 +75,7 @@ export function defaults() {
     selection: true,
     floatingButton: true,
     translateTitle: false,
+    replaceTraditionalChinese: false,
     lazy: true,
     autoSites: [],
     blockSites: [],
@@ -196,6 +197,7 @@ export function normalizeSettings(raw = {}) {
     'selection',
     'floatingButton',
     'translateTitle',
+    'replaceTraditionalChinese',
     'lazy',
     'maskPrivacy',
     'cache',
@@ -273,6 +275,7 @@ export function translationSettingsChanged(previous, next) {
         'autoSites',
         'blockSites',
         'translateTitle',
+        'replaceTraditionalChinese',
         'lazy',
         'serviceFallback',
       ].map((key) => [
