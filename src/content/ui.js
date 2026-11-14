@@ -14,17 +14,22 @@ import { FloatingDock, floatingCss } from './floating.js';
 
 const css = `
 :host {
-  --paper: #f7fafc;
-  --surface: #fff;
-  --ink: #18354c;
-  --muted: #5a7184;
-  --brand: #086f83;
-  --soft: #ddf2f1;
-  --line: #d5e2e9;
+  --paper: #f4f7f9;
+  --surface: #ffffff;
+  --surface-2: #fafcfd;
+  --ink: #1a2b36;
+  --muted: #5d7280;
+  --brand: #2d8088;
+  --brand-soft: #e3f0f1;
+  --brand-weak: #f0f6f6;
+  --line: #d8e2e6;
+  --line-soft: #e8eef0;
+  --error: #c0392b;
   all: initial;
   font:
     14px/1.65 "Microsoft YaHei UI",
     "Microsoft YaHei",
+    system-ui,
     sans-serif;
   color: var(--ink);
   position: fixed;
@@ -35,24 +40,32 @@ const css = `
   color-scheme: light;
 }
 :host([data-theme="dark"]) {
-  --paper: #14212e;
-  --surface: #1d3040;
-  --ink: #ecf6ff;
-  --muted: #b3c4d1;
-  --brand: #78d6d1;
-  --soft: #24494d;
-  --line: #40576a;
+  --paper: #121a22;
+  --surface: #1b2630;
+  --surface-2: #212d38;
+  --ink: #e6f0f5;
+  --muted: #9fb2bf;
+  --brand: #7dd3d0;
+  --brand-soft: #1d3838;
+  --brand-weak: #182f2f;
+  --line: #324154;
+  --line-soft: #28394a;
+  --error: #ff8a8a;
   color-scheme: dark;
 }
 @media (prefers-color-scheme: dark) {
   :host([data-theme="system"]) {
-    --paper: #14212e;
-    --surface: #1d3040;
-    --ink: #ecf6ff;
-    --muted: #b3c4d1;
-    --brand: #78d6d1;
-    --soft: #24494d;
-    --line: #40576a;
+    --paper: #121a22;
+    --surface: #1b2630;
+    --surface-2: #212d38;
+    --ink: #e6f0f5;
+    --muted: #9fb2bf;
+    --brand: #7dd3d0;
+    --brand-soft: #1d3838;
+    --brand-weak: #182f2f;
+    --line: #324154;
+    --line-soft: #28394a;
+    --error: #ff8a8a;
     color-scheme: dark;
   }
 }
@@ -73,16 +86,18 @@ select {
 button {
   border: 1px solid var(--line);
   background: var(--surface);
-  border-radius: 7px;
+  border-radius: 10px;
   padding: 5px 11px;
   min-height: 32px;
+  transition: background 180ms ease, border-color 180ms ease;
 }
 button:hover {
-  background: var(--soft);
+  background: var(--brand-weak);
+  border-color: var(--line);
 }
 button:disabled {
-  opacity: 0.55;
-  cursor: wait;
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 button:focus-visible,
 select:focus-visible,
@@ -92,8 +107,9 @@ textarea:focus-visible {
 }
 .primary {
   background: var(--brand);
-  color: var(--surface);
+  color: #fff;
   border-color: var(--brand);
+  font-weight: 500;
 }
 .primary:hover {
   filter: brightness(1.08);
@@ -108,11 +124,11 @@ textarea:focus-visible {
   padding: 0;
   border-radius: 50% 50% 50% 14%;
   background: var(--brand);
-  color: var(--surface);
+  color: #fff;
   font:
     500 25px/1 Georgia,
     serif;
-  box-shadow: 0 4px 20px #0002;
+  box-shadow: 0 4px 20px #0003;
   pointer-events: auto;
 }
 .bubble {
@@ -120,8 +136,9 @@ textarea:focus-visible {
   pointer-events: auto;
   padding: 3px 10px;
   background: var(--brand);
-  color: var(--surface);
-  border-radius: 14px;
+  color: #fff;
+  border-radius: 999px;
+  font-size: 13px;
 }
 .panel {
   position: fixed;
@@ -133,7 +150,7 @@ textarea:focus-visible {
   background: var(--surface);
   color: var(--ink);
   border: 1px solid var(--line);
-  border-radius: 16px;
+  border-radius: 14px;
   box-shadow: 0 12px 50px #0003;
   pointer-events: auto;
 }
@@ -149,7 +166,7 @@ textarea:focus-visible {
   z-index: 1;
 }
 .panel-head strong {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   flex: 1;
 }
@@ -170,9 +187,15 @@ textarea:focus-visible {
   max-height: 220px;
   padding: 10px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--paper);
+  border-radius: 6px;
+  background: var(--surface-2);
   resize: vertical;
+  transition: border-color 180ms ease;
+}
+.source:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-color: var(--brand);
 }
 .result {
   white-space: pre-wrap;
@@ -191,7 +214,7 @@ textarea:focus-visible {
   font-size: 12px;
 }
 .error {
-  color: #b42335;
+  color: var(--error);
 }
 .toast {
   position: fixed;
@@ -200,11 +223,13 @@ textarea:focus-visible {
   transform: translateX(-50%);
   max-width: min(620px, calc(100vw - 30px));
   padding: 10px 16px;
-  border-radius: 9px;
+  border-radius: 10px;
   background: var(--ink);
   color: var(--surface);
-  box-shadow: 0 3px 18px #0003;
+  box-shadow: 0 4px 20px #0004;
   pointer-events: auto;
+  font-size: 13px;
+  line-height: 1.5;
 }
 .switch-toast { opacity: 0; transition: opacity 180ms ease; z-index: 2; }
 .switch-toast.visible { opacity: 1; }
@@ -220,8 +245,8 @@ textarea:focus-visible {
   color: #fff;
   text-shadow: 0 1px 4px #000;
   background: #101820d9;
-  border-radius: 7px;
-  padding: 7px 14px;
+  border-radius: 8px;
+  padding: 8px 16px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.4;
@@ -248,6 +273,7 @@ textarea:focus-visible {
   background: #223847;
   color: #fff;
   border-color: #5a7184;
+  border-radius: 6px;
 }
 .caption[hidden],
 .panel[hidden],

@@ -9,7 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const project = path.resolve(root, '..');
 const manifest = JSON.parse(await fs.readFile(path.join(root, 'manifest.json'), 'utf8'));
 const packageInfo = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
-if (!/^\d+\.\d+\.\d+$/.test(manifest.version) || manifest.version !== packageInfo.version)
+if (!/^\d+\.\d+\.\d+(?:\.\d+)?$/.test(manifest.version) || manifest.version !== packageInfo.version)
   throw new Error('Manifest and package versions must match');
 const artifactName = 'O泡翻译-' + manifest.version;
 const output = path.join(project, '05_构建产物', artifactName);

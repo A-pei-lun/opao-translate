@@ -62,7 +62,7 @@ export const translationCss = `
   opacity: 0.76;
 }
 .opao-target[data-style="line"] {
-  border-inline-start: 2px solid #278b98;
+  border-inline-start: 2px solid #c08a2e;
   padding-inline-start: 0.8em;
 }
 .opao-target[data-style="soft"] {
@@ -83,7 +83,7 @@ export const translationCss = `
   text-decoration-color: color-mix(in srgb, currentColor 55%, transparent);
 }
 .opao-target[data-style="highlight"] {
-  background: color-mix(in srgb, #d9aa35 18%, transparent);
+  background: color-mix(in srgb, #c08a2e 16%, transparent);
   padding: 0.2em 0.4em;
   box-decoration-break: clone;
   border-radius: 3px;
@@ -128,7 +128,7 @@ export const translationCss = `
   margin: min(var(--opao-gap, 0.65em), 0.25em) 0 0;
 }
 .opao-target[data-state="error"] {
-  color: #b42335;
+  color: #c0392b;
 }
 .opao-target.opao-masked:not(:hover) {
   filter: blur(5px);

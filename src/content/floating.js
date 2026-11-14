@@ -8,8 +8,8 @@ export const floatingCss = `
   pointer-events: none;
   z-index: 3;
   transition:
-    transform 0.16s ease,
-    opacity 0.16s ease;
+    transform 0.18s cubic-bezier(0.4,0,0.2,1),
+    opacity 0.18s cubic-bezier(0.4,0,0.2,1);
 }
 .floating-dock .floating {
   position: relative;
@@ -21,15 +21,15 @@ export const floatingCss = `
 }
 .floating-dock .floating:hover {
   background: var(--brand);
-  filter: brightness(1.07);
+  filter: brightness(1.1);
 }
 .floating-dock[data-side="right"].is-collapsed {
   transform: translateX(28px);
-  opacity: 0.65;
+  opacity: 0.6;
 }
 .floating-dock[data-side="left"].is-collapsed {
   transform: translateX(-28px);
-  opacity: 0.65;
+  opacity: 0.6;
 }
 .floating-dock.is-dragging {
   transition: none;
@@ -44,12 +44,12 @@ export const floatingCss = `
   margin-top: 8px;
   opacity: 0;
   visibility: hidden;
-  transform: translateY(-5px);
+  transform: translateY(-6px);
   pointer-events: none;
   transition:
-    opacity 0.16s ease,
-    transform 0.16s ease,
-    visibility 0s 0.16s;
+    opacity 0.18s cubic-bezier(0.4,0,0.2,1),
+    transform 0.18s cubic-bezier(0.4,0,0.2,1),
+    visibility 0s 0.18s;
 }
 .floating-dock.is-expanded .floating-actions {
   opacity: 1;
@@ -63,10 +63,10 @@ export const floatingCss = `
   min-height: 29px;
   padding: 2px 0;
   font-size: 12px;
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--surface);
   color: var(--ink);
-  box-shadow: 0 2px 12px #0002;
+  box-shadow: 0 2px 12px #0003;
 }
 .page-settings {
   position: fixed;
@@ -78,7 +78,7 @@ export const floatingCss = `
   border-radius: 14px;
   background: var(--surface);
   color: var(--ink);
-  box-shadow: 0 12px 42px #0003;
+  box-shadow: 0 12px 42px #0004;
   pointer-events: auto;
 }
 .page-settings[hidden] {
@@ -89,8 +89,12 @@ export const floatingCss = `
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 14px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--line);
+}
+.page-settings-head strong {
+  font-size: 14px;
+  font-weight: 600;
 }
 .page-settings-body {
   display: grid;
@@ -104,6 +108,7 @@ export const floatingCss = `
   gap: 5px;
   color: var(--muted);
   font-size: 12px;
+  font-weight: 500;
 }
 .page-settings select {
   width: 100%;
@@ -111,10 +116,16 @@ export const floatingCss = `
   min-height: 36px;
   padding: 6px 9px;
   border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--paper);
+  border-radius: 6px;
+  background: var(--surface-2, var(--paper));
   color: var(--ink);
   font-size: 14px;
+  transition: border-color 180ms ease;
+}
+.page-settings select:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-color: var(--brand);
 }
 .page-settings-row {
   display: grid;
@@ -128,7 +139,7 @@ export const floatingCss = `
   overflow-wrap: anywhere;
 }
 .page-settings .settings-result.error {
-  color: #b42335;
+  color: var(--error, #c0392b);
 }
 .page-settings .primary {
   width: 100%;
@@ -140,7 +151,7 @@ export const floatingCss = `
     transition: none !important;
   }
 }
-`;
+`
 
 export class FloatingDock {
   constructor(root, { translate, settings, move, notify }) {
