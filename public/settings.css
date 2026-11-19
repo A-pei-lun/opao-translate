@@ -1,0 +1,858 @@
+/* Settings only: shared popup and workspace styles stay in app.css. */
+.settings-page {
+  --settings-bar: 80px;
+  --settings-switch-off: #627a88;
+  font-family: 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+  background: var(--c-paper);
+  color: var(--c-ink);
+}
+.settings-page :is(button, a, summary, input, select, textarea) {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  scroll-margin-block: calc(var(--settings-bar) + 24px) 28px;
+}
+.settings-page :is(h1, h2, h3) {
+  text-wrap: balance;
+}
+.settings-page :is(p, label, .check-copy) {
+  overflow-wrap: anywhere;
+}
+.settings-page .hint {
+  color: var(--c-muted);
+  max-width: 68ch;
+}
+.settings-page .tag {
+  color: var(--c-brand-strong);
+  background: var(--c-brand-weak);
+}
+:root[data-theme='dark'] .settings-page {
+  --settings-switch-off: #536b7b;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme='system'] .settings-page {
+    --settings-switch-off: #536b7b;
+  }
+}
+.settings-page .primary {
+  color: var(--c-paper);
+  font-weight: 600;
+}
+:root[data-theme='light'] .settings-page .primary {
+  color: #fff;
+}
+@media (prefers-color-scheme: light) {
+  :root[data-theme='system'] .settings-page .primary {
+    color: #fff;
+  }
+}
+.settings-page .skip-link {
+  position: fixed;
+  top: 12px;
+  left: 16px;
+  z-index: 40;
+  padding: 8px 16px;
+  background: var(--c-surface);
+  color: var(--c-brand-strong);
+  border: 1px solid var(--c-brand);
+  border-radius: 6px;
+  transform: translateY(-160%);
+}
+.settings-page .skip-link:focus {
+  transform: translateY(0);
+}
+.settings-page .app-header {
+  height: var(--settings-bar);
+  min-height: var(--settings-bar);
+  padding: 12px max(24px, calc((100vw - 1300px) / 2));
+  flex-wrap: nowrap;
+  gap: 20px;
+  z-index: 20;
+  box-shadow: none;
+}
+.settings-page .brand {
+  flex: 0 0 auto;
+}
+.settings-page .brand:hover {
+  text-decoration: none;
+}
+.settings-page .brand-name {
+  font-size: 20px;
+}
+.settings-page .header-actions {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  min-width: 0;
+}
+.settings-page .header-actions .row {
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+.settings-page .header-actions button {
+  white-space: nowrap;
+}
+.settings-page .header-actions .status {
+  max-width: 260px;
+  line-height: 1.5;
+}
+.settings-page .status:empty {
+  display: none;
+}
+.settings-page .settings-layout {
+  max-width: 1348px;
+  grid-template-columns: 204px minmax(0, 1fr);
+  min-height: calc(100vh - var(--settings-bar));
+}
+.settings-page .sidebar {
+  padding: 32px 16px;
+  top: var(--settings-bar);
+  max-height: calc(100vh - var(--settings-bar));
+  gap: 5px;
+  border-color: var(--c-line-soft);
+}
+.settings-page .nav-caption {
+  margin: 0 12px 12px;
+  color: var(--c-muted);
+  font-size: 12px;
+}
+.settings-page .sidebar a {
+  display: block;
+  position: relative;
+  padding: 11px 14px;
+  border-radius: 7px;
+  color: var(--c-muted);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-decoration: none;
+}
+.settings-page .sidebar a:hover {
+  background: var(--c-brand-weak);
+  color: var(--c-ink);
+}
+.settings-page .sidebar a[aria-current='page'] {
+  background: var(--c-brand-soft);
+  color: var(--c-brand-strong);
+}
+.settings-page .sidebar a[aria-current='page']::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--c-brand);
+}
+.settings-page .sidebar .sidebar-footer {
+  margin: 28px 14px 0;
+  color: var(--c-muted);
+  line-height: 1.9;
+}
+.settings-page .settings-main {
+  padding: 36px 44px 80px;
+  min-width: 0;
+}
+.settings-page .settings-main:focus-visible {
+  outline: 2px solid var(--c-brand);
+  outline-offset: -8px;
+}
+.settings-page .section-heading {
+  margin-bottom: 32px;
+}
+.settings-page .section-heading h1 {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.settings-page .section-heading h1:focus-visible {
+  outline: 2px solid var(--c-brand);
+  outline-offset: 4px;
+  border-radius: 3px;
+}
+.settings-page .section-heading p {
+  margin-top: 8px;
+  color: var(--c-muted);
+  font-size: 13px;
+  max-width: 70ch;
+}
+.settings-page .settings-sections {
+  display: grid;
+  gap: 36px;
+  min-width: 0;
+}
+.settings-page .settings-group {
+  min-width: 0;
+}
+.settings-page .group-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 14px;
+  align-items: center;
+  margin: 0 0 4px;
+  padding: 0 0 14px;
+  border-bottom: 1px solid var(--c-line);
+}
+.settings-page .group-heading h2 {
+  font-size: 16px;
+  font-weight: 600;
+  grid-column: 1;
+}
+.settings-page .group-heading p {
+  grid-column: 1;
+  grid-row: 2;
+}
+.settings-page .group-heading .tag {
+  grid-column: 2;
+  grid-row: 1;
+}
+.settings-page .group-content {
+  min-width: 0;
+}
+.settings-page .group-content > button {
+  margin-block: 12px;
+}
+.settings-page .group-content > p.hint {
+  margin-block: 12px;
+}
+.settings-page .field {
+  grid-template-columns: minmax(160px, 0.85fr) minmax(220px, 1fr);
+  gap: 16px 28px;
+  align-items: start;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--c-line-soft);
+}
+.settings-page .field[hidden] {
+  display: none;
+}
+.settings-page .field-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.settings-page .field-copy > label {
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  line-height: 1.6;
+}
+.settings-page .field-control {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+.settings-page .field-control > .row {
+  flex-wrap: nowrap;
+}
+.settings-page .field-error {
+  font-size: 12px;
+  color: var(--c-error);
+}
+.settings-page .field-error:empty {
+  display: none;
+}
+.settings-page :is(input, select, textarea) {
+  font-size: 13px;
+}
+.settings-page :is(select, textarea) {
+  background-color: var(--c-surface);
+  color: var(--c-ink);
+}
+.settings-page :is(input[type='number'], input[type='range'], .compact-stack > .hint) {
+  font-variant-numeric: tabular-nums;
+}
+.settings-page :is(.grid-two, .grid-three) {
+  gap: 18px 20px;
+  padding: 18px 0;
+}
+.settings-page :is(.grid-two, .grid-three) > .field {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 0;
+  border: 0;
+  gap: 8px;
+}
+.settings-page .check {
+  width: 100%;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 58px;
+  gap: 24px;
+  padding: 15px 0;
+  border-bottom: 1px solid var(--c-line-soft);
+  cursor: pointer;
+  font-size: 14px;
+}
+.settings-page .check-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.settings-page .check-copy > span:first-child {
+  font-weight: 500;
+}
+.settings-page input[type='checkbox'] {
+  appearance: none;
+  position: relative;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  margin: 0 2px 0 0;
+  border: 1px solid var(--settings-switch-off);
+  border-radius: 12px;
+  background: var(--settings-switch-off);
+  cursor: pointer;
+}
+.settings-page input[type='checkbox']::before {
+  content: '';
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  top: 3px;
+  left: 3px;
+  border-radius: 50%;
+  background: var(--c-paper);
+  transition: transform 140ms ease;
+}
+.settings-page input[type='checkbox']:checked {
+  background: var(--c-brand);
+  border-color: var(--c-brand);
+}
+.settings-page input[type='checkbox']:checked::before {
+  transform: translateX(14px);
+}
+.settings-page input[type='checkbox']:disabled {
+  cursor: not-allowed;
+}
+.settings-page input:disabled,
+.settings-page select:disabled {
+  opacity: 0.6;
+}
+.settings-page .dependent-setting {
+  margin-inline-start: 16px;
+  padding-inline-start: 16px;
+  border-inline-start: 2px solid var(--c-line);
+}
+.settings-page .settings-details {
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--c-line-soft);
+  min-width: 0;
+}
+.settings-page .settings-details > summary {
+  padding: 14px 0;
+  min-height: 48px;
+  font-size: 13px;
+  color: var(--c-brand-strong);
+  font-weight: 500;
+  cursor: pointer;
+}
+.settings-page .settings-details > summary:hover {
+  color: var(--c-ink);
+}
+.settings-page .settings-details > summary:focus-visible {
+  outline: 2px solid var(--c-brand);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.settings-page .settings-details[open] > summary {
+  margin: 0;
+}
+.settings-page .details-content {
+  display: grid;
+  gap: 4px;
+  padding: 0 0 16px;
+  min-width: 0;
+}
+.settings-page .preview-frame {
+  margin: 2px 0 6px;
+  padding: 18px 24px 22px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: 10px;
+}
+.settings-page .preview-label {
+  color: var(--c-muted);
+  font-size: 12px;
+}
+.settings-page .reading-preview {
+  padding: 12px 0 0;
+  box-shadow: none;
+  border-radius: 0;
+  background: transparent;
+  font-size: 17px;
+}
+.settings-page .reading-preview > p {
+  max-width: 70ch;
+}
+.settings-page .style-grid {
+  gap: 12px;
+}
+.settings-page .style-choice {
+  border-radius: 8px;
+  padding: 14px;
+  box-shadow: none;
+  min-width: 0;
+}
+.settings-page .style-choice .check {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  justify-content: flex-start;
+  font-size: 13px;
+}
+.settings-page .style-choice-preview {
+  padding: 10px 12px;
+}
+.settings-page .shortcut-list {
+  display: flex;
+  gap: 12px 24px;
+  flex-wrap: wrap;
+  padding: 20px 0 8px;
+  color: var(--c-muted);
+  font-size: 12px;
+}
+.settings-page .shortcut-list > span {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+.settings-page kbd {
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 6px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: 4px;
+  color: var(--c-ink);
+}
+.settings-page .ai-layout-settings {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.settings-page .ai-layout-options {
+  margin: 8px 0 0 16px;
+  padding: 0 0 0 16px;
+  gap: 0;
+  border-inline-start-color: var(--c-line);
+}
+.settings-page .ai-layout-options legend {
+  font-size: 12px;
+  padding-inline: 0 8px;
+}
+.settings-page .ai-layout-options:disabled {
+  opacity: 0.7;
+}
+.settings-page .choice-set {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 0;
+}
+.settings-page .choice-set .check {
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 7px 11px;
+  gap: 8px;
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--c-surface);
+}
+.settings-page .choice-set .check:has(:checked) {
+  border-color: var(--c-brand);
+  background: var(--c-brand-weak);
+}
+.settings-page .choice-set .check:hover {
+  border-color: var(--c-brand);
+}
+.settings-page .choice-set input[type='checkbox'] {
+  appearance: auto;
+  position: static;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: initial;
+  border-radius: initial;
+  background: initial;
+  order: -1;
+}
+.settings-page .choice-set input[type='checkbox']::before {
+  content: none;
+}
+.settings-page .comparison-services .check > span {
+  min-width: 0;
+  max-width: 280px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.settings-page .service-board {
+  grid-template-columns: 190px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.settings-page .service-list {
+  position: sticky;
+  top: calc(var(--settings-bar) + 24px);
+  gap: 6px;
+  min-width: 0;
+}
+.settings-page .service-list-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 8px;
+}
+.settings-page .service-list-heading h2 {
+  font-size: 13px;
+  color: var(--c-muted);
+  font-weight: 500;
+}
+.settings-page .service-item {
+  gap: 2px;
+  padding: 12px;
+  border-color: transparent;
+  background: transparent;
+  border-radius: 7px;
+}
+.settings-page .service-item[aria-pressed='true'] {
+  border-color: var(--c-brand);
+  background: var(--c-brand-weak);
+}
+.settings-page .service-item strong {
+  font-size: 14px;
+  font-weight: 500;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.settings-page .service-item :is(strong, small, .hint) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.settings-page .add-service {
+  margin-top: 6px;
+  border-style: dashed;
+  color: var(--c-brand-strong);
+  background: transparent;
+}
+.settings-page .form-block {
+  display: block;
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: 10px;
+  padding: 22px 24px;
+}
+.settings-page .form-block .field {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+.settings-page .form-block .grid-two {
+  padding: 16px 0;
+}
+.settings-page .form-block .grid-two .field {
+  padding: 0;
+}
+.settings-page .service-editor-heading {
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+.settings-page .service-editor-heading h2 {
+  font-size: 17px;
+}
+.settings-page .form-block h3 {
+  margin-top: 18px;
+  font-size: 13px;
+}
+.settings-page .form-block .button-row {
+  margin: 14px 0 4px;
+}
+.settings-page .form-block .status {
+  padding: 8px 0;
+}
+.settings-page .secret-control > input {
+  flex: 1;
+  min-width: 0;
+}
+.settings-page .secret-control > button {
+  flex: 0 0 auto;
+}
+.settings-page .form-block .service-actions {
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 0;
+}
+.settings-page .service-actions .check {
+  width: auto;
+  flex: 1;
+  border: 0;
+  padding: 8px 0;
+  min-height: 36px;
+}
+.settings-page .service-actions button {
+  font-size: 12px;
+}
+.settings-page .roles,
+.settings-page .fallback-settings {
+  border: 0;
+  padding: 0;
+  min-width: 0;
+}
+.settings-page .roles > .grid-three {
+  padding-top: 18px;
+}
+.settings-page .fallback-heading {
+  margin-bottom: 0;
+}
+.settings-page .fallback-order {
+  margin: 0 0 12px;
+}
+.settings-page .fallback-order li {
+  padding: 12px 0;
+}
+.settings-page .fallback-label strong {
+  font-weight: 500;
+}
+.settings-page .code-output {
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+  padding: 16px;
+  border: 1px solid var(--c-line);
+  border-radius: 6px;
+  font-size: 12px;
+  background: var(--c-surface);
+}
+.settings-page textarea[name='headers'],
+.settings-page textarea[name='body'],
+.settings-page textarea[name='siteRules'] {
+  font-family: Consolas, 'Microsoft YaHei UI', monospace;
+  font-size: 12px;
+}
+.settings-page .data-status:not(:empty) {
+  padding: 10px 14px;
+  border-inline-start: 2px solid var(--c-brand);
+  background: var(--c-brand-weak);
+}
+.settings-page .notice {
+  margin: 16px 0 0;
+  font-size: 12px;
+}
+.settings-page input[type='file'] {
+  padding: 8px;
+}
+.settings-page input[type='file']::file-selector-button {
+  font: inherit;
+  color: var(--c-ink);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-line);
+  border-radius: 4px;
+  padding: 4px 8px;
+  margin-inline-end: 8px;
+  cursor: pointer;
+}
+@media (max-width: 1100px) {
+  .settings-page .settings-layout {
+    grid-template-columns: 184px minmax(0, 1fr);
+  }
+  .settings-page .settings-main {
+    padding: 28px 28px 64px;
+  }
+  .settings-page .service-board {
+    grid-template-columns: 160px minmax(0, 1fr);
+    gap: 18px;
+  }
+  .settings-page .form-block {
+    padding: 18px;
+  }
+  .settings-page .grid-three {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .settings-page .header-actions {
+    gap: 12px;
+  }
+}
+@media (max-width: 900px) {
+  .settings-page .service-board {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-page .service-list {
+    position: static;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .settings-page .service-list-heading {
+    grid-column: 1 / -1;
+  }
+  .settings-page .service-item {
+    min-width: 0;
+  }
+  .settings-page .add-service {
+    margin: 0;
+  }
+}
+@media (max-width: 760px) {
+  .settings-page {
+    --settings-bar: 92px;
+  }
+  .settings-page .app-header {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: 36px 18px;
+    column-gap: 8px;
+    row-gap: 6px;
+    padding: 12px 16px;
+    align-items: center;
+  }
+  .settings-page .brand {
+    grid-column: 1;
+    grid-row: 1;
+    gap: 8px;
+  }
+  .settings-page .brand img {
+    width: 32px;
+    height: 32px;
+  }
+  .settings-page .brand-name {
+    font-size: 17px;
+  }
+  .settings-page .brand small {
+    display: none;
+  }
+  .settings-page .header-actions {
+    display: contents;
+  }
+  .settings-page .header-actions .row {
+    grid-column: 2;
+    grid-row: 1;
+    gap: 6px;
+  }
+  .settings-page .header-actions button {
+    min-height: 34px;
+    padding: 6px 9px;
+    font-size: 12px;
+  }
+  .settings-page .header-actions .status {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    max-width: none;
+    font-size: 11px;
+  }
+  .settings-page .settings-layout {
+    display: block;
+  }
+  .settings-page .sidebar {
+    position: static;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    max-height: none;
+    overflow-x: auto;
+    gap: 4px;
+    padding: 10px 12px;
+    border-inline-end: 0;
+    border-bottom: 1px solid var(--c-line);
+  }
+  .settings-page .sidebar a {
+    flex: 0 0 auto;
+    padding: 8px 11px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  .settings-page .sidebar a[aria-current='page']::before {
+    display: none;
+  }
+  .settings-page .sidebar :is(.nav-caption, .sidebar-footer) {
+    display: none;
+  }
+  .settings-page .settings-main {
+    padding: 24px 20px 56px;
+  }
+  .settings-page .section-heading {
+    margin-bottom: 28px;
+  }
+  .settings-page .section-heading h1 {
+    font-size: 23px;
+  }
+  .settings-page .settings-sections {
+    gap: 30px;
+  }
+  .settings-page .field {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+  .settings-page .check {
+    gap: 18px;
+  }
+  .settings-page .check-copy .hint {
+    font-size: 12px;
+  }
+  .settings-page .preview-frame {
+    padding: 16px;
+  }
+  .settings-page .reading-preview {
+    font-size: 16px;
+    padding: 10px 0 0;
+  }
+}
+@media (max-width: 540px) {
+  .settings-page :is(.grid-two, .grid-three, .style-grid) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-page .settings-main {
+    padding-inline: 16px;
+  }
+  .settings-page .form-block {
+    padding: 16px;
+  }
+  .settings-page .group-heading {
+    gap: 5px 8px;
+  }
+  .settings-page .group-heading h2 {
+    font-size: 15px;
+  }
+  .settings-page .service-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settings-page .service-list-heading {
+    grid-column: 1;
+  }
+  .settings-page .service-item {
+    padding: 10px 12px;
+  }
+  .settings-page .service-actions {
+    flex-wrap: wrap;
+  }
+  .settings-page .service-actions .check {
+    min-width: 150px;
+  }
+  .settings-page .fallback-order li {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+  .settings-page .fallback-actions {
+    grid-column: 2;
+  }
+}
+@media (forced-colors: active) {
+  .settings-page input[type='checkbox'] {
+    appearance: auto;
+  }
+  .settings-page input[type='checkbox']::before {
+    content: none;
+  }
+}
