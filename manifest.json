@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "O泡翻译",
-  "version": "0.1.6.1",
+  "version": "0.1.6.2",
   "description": "个人自用双语翻译，支持网页、图片、文档、字幕及自定义模型接口。",
   "minimum_chrome_version": "120",
   "permissions": [
@@ -14,7 +14,9 @@
     "tabCapture",
     "declarativeNetRequestWithHostAccess"
   ],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js",
     "type": "module"
@@ -35,16 +37,27 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*", "file:///*"],
-      "js": ["content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "file:///*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle",
       "all_frames": true,
       "match_about_blank": true,
       "match_origin_as_fallback": true
     },
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["subtitle-hook.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "subtitle-hook.js"
+      ],
       "run_at": "document_start",
       "all_frames": true,
       "world": "MAIN"
