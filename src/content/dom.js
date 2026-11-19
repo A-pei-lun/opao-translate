@@ -4,6 +4,7 @@ import { applyTranslationAppearance, translationCss } from '../shared/appearance
 import { paragraphElements, PARAGRAPH_SELECTOR } from './paragraphs.js';
 import { StreamView } from './stream-view.js';
 import { chineseAction, simplifyChinese, simplifyChineseParts } from './chinese.js';
+import { LayoutQueue, layoutKind } from './layout.js';
 
 const candidates = PARAGRAPH_SELECTOR;
 const excluded =
@@ -45,6 +46,20 @@ function safeClone(element, deep) {
   for (const node of clone.querySelectorAll('script,style,iframe,object,embed')) node.remove();
   return clone;
 }
+function inlineClone(element) {
+  const clone = safeClone(element, false);
+  // Site classes often encode flex positions, fixed heights or large heading
+  // margins. Keep the text's appearance, not its original layout container.
+  clone.removeAttribute('class');
+  clone.removeAttribute('style');
+  if (!clone.matches('ruby,rt,rp')) clone.style.display = 'inline';
+  if (element.isConnected) {
+    const style = getComputedStyle(element);
+    for (const property of ['color', 'font-weight', 'font-style', 'text-decoration', 'vertical-align'])
+      clone.style.setProperty(property, style.getPropertyValue(property));
+  }
+  return clone;
+}
 export function serializeRich(element, preserve = () => false) {
   const nonce = crypto.randomUUID().slice(0, 8);
   const nodes = new Map();
@@ -54,7 +69,7 @@ export function serializeRich(element, preserve = () => false) {
     if (node.nodeType !== Node.ELEMENT_NODE || node.matches('.opao-target,[data-opao-ui]'))
       return '';
     const id = sequence++;
-    if (node.matches('code,pre,math,svg,mjx-container,img,br,kbd,[translate=no]') ||
+    if (node.matches('code,pre,math,svg,mjx-container,img,br,kbd,[translate=no],[aria-hidden=true]') ||
         (node !== element && preserve(node))) {
       nodes.set(id, { node });
       return `{{OPAO${nonce}K${id}}}`;
@@ -67,7 +82,9 @@ export function serializeRich(element, preserve = () => false) {
     return `{{OPAO${nonce}S${id}}}${content}{{OPAO${nonce}E${id}}}`;
   }
   const text = walk(element);
-  function render(translated) {
+  function render(translated, { omitIcons = false } = {}) {
+    const protectedNode = (node) => omitIcons && node.matches('svg,img,picture,[aria-hidden=true]')
+      ? document.createDocumentFragment() : safeClone(node, true);
     const fragment = document.createDocumentFragment();
     const stack = [{ node: fragment, id: -1 }];
     const token = new RegExp(`\\{\\{OPAO${nonce}([SEK])(\\d+)\\}\\}`, 'g');
@@ -83,7 +100,7 @@ export function serializeRich(element, preserve = () => false) {
         break;
       }
       if (match[1] === 'S') {
-        const clone = safeClone(record.node, false);
+        const clone = inlineClone(record.node);
         stack.at(-1).node.append(clone);
         stack.push({ node: clone, id });
       } else if (match[1] === 'E') {
@@ -92,7 +109,7 @@ export function serializeRich(element, preserve = () => false) {
           break;
         }
         stack.pop();
-      } else stack.at(-1).node.append(safeClone(record.node, true));
+      } else stack.at(-1).node.append(protectedNode(record.node));
       cursor = token.lastIndex;
     }
     stack.at(-1).node.append(document.createTextNode(translated.slice(cursor)));
@@ -103,7 +120,7 @@ export function serializeRich(element, preserve = () => false) {
       while ((match = token.exec(translated))) {
         fallback.append(document.createTextNode(translated.slice(position, match.index)));
         if (match[1] === 'K' && nodes.has(Number(match[2])))
-          fallback.append(safeClone(nodes.get(Number(match[2])).node, true));
+          fallback.append(protectedNode(nodes.get(Number(match[2])).node));
         position = token.lastIndex;
       }
       fallback.append(document.createTextNode(translated.slice(position)));
@@ -128,6 +145,9 @@ export class PageTranslator {
     this.active = false;
     this.busy = false;
     this.generation = 0;
+    this.layout = new LayoutQueue(() => this.settings,
+      (record) => this.records.get(record.element) === record && record.target.isConnected,
+      (record, mode) => { record.layoutMode = mode; this.updateStyle(record); }, this.notify);
     this.observedRoots = new WeakSet();
     this.styleRoots = new WeakSet();
     this.mutationTimer = null;
@@ -293,7 +313,8 @@ export class PageTranslator {
     return result;
   }
   updateStyle(record) {
-    if (this.settings.mode === 'translation') {
+    const replace = this.settings.mode === 'translation' || record.layoutMode === 'replace';
+    if (replace) {
       if (!record.source) {
         record.source = document.createElement('span');
         record.source.className = 'opao-source';
@@ -310,6 +331,8 @@ export class PageTranslator {
     }
     applyTranslationAppearance(record.target, this.settings);
     this.updateLayout(record);
+    if (record.translation !== undefined && record.state === 'done')
+      record.target.replaceChildren(record.rich.render(record.translation, { omitIcons: !replace }));
   }
   setLayoutStyles(node, values) {
     let saved = this.layoutStyles.get(node);
@@ -329,11 +352,18 @@ export class PageTranslator {
       saved.properties.get(key).after = node.style.getPropertyValue(key);
     }
   }
-  updateLayout({ element, target }) {
+  updateLayout(record) {
+    const { element, target } = record;
     const computed = getComputedStyle(element);
-    if (/flex/.test(computed.display) && computed.flexDirection.startsWith('row'))
-      this.setLayoutStyles(element, { 'flex-wrap': 'wrap' });
+    if (/flex|grid/.test(computed.display) && layoutKind(element) === 'heading')
+      this.setLayoutStyles(element, { display: 'block' });
+    else if (/flex/.test(computed.display) && computed.flexDirection.startsWith('row'))
+      this.setLayoutStyles(element, { 'flex-wrap': 'wrap', 'row-gap': '0.15em' });
     const link = element.closest('a,button,[role=button],[role=tab]');
+    const banner = element.closest('header,[role=banner]');
+    const tightBanner = banner && /fixed|sticky/.test(getComputedStyle(banner).position) &&
+      banner.getBoundingClientRect().height <= 100;
+    if (tightBanner) target.dataset.layout = 'compact';
     if (link) {
       for (let node = element; node; node = node.parentElement) {
         const computed = getComputedStyle(node);
@@ -351,13 +381,20 @@ export class PageTranslator {
         }
         if (node === link) break;
       }
+      target.dataset.layout = 'compact';
     }
     const navigation = element.closest(
       'nav,aside,[role=navigation],[role=menu],[role=menubar],' +
         '[data-sidebar=sidebar],[data-sidebar=content],[data-sidebar=menu]',
     );
+    if (navigation && navigation !== element) target.dataset.layout = 'navigation';
+    if (record.layoutMode) target.dataset.presentation = record.layoutMode;
+    else delete target.dataset.presentation;
+    if (link || navigation || tightBanner || ['compact', 'inline', 'replace'].includes(record.layoutMode))
+      target.style.setProperty('line-height', '1.35', 'important');
+    if (tightBanner)
+      target.style.setProperty('font-size', `min(${this.settings.textSize}%, 12px)`, 'important');
     if (!navigation || navigation === element) return;
-    target.dataset.layout = 'navigation';
     const control = element.closest('a,button,[role=button],[role=menuitem],[role=treeitem]');
     let row = control && navigation.contains(control) ? control : element;
     if (
@@ -393,8 +430,14 @@ export class PageTranslator {
         this.setLayoutStyles(node, { 'flex-grow': '1', 'flex-shrink': '1', 'flex-basis': '0%' });
       if (node === row) break;
     }
+    if (navigation.getBoundingClientRect().width <= 100 && control) {
+      this.setLayoutStyles(control, { 'flex-direction': 'column', 'align-items': 'center', gap: '2px' });
+      target.dataset.layout = 'rail';
+      target.style.setProperty('font-size', `min(${this.settings.textSize}%, 12px)`, 'important');
+    }
   }
   makeRecord(element) {
+    const originalHeight = element.getBoundingClientRect().height;
     const rich = serializeRich(element, this.isExcluded);
     const original = sourceText(element);
     const target = document.createElement('span');
@@ -417,6 +460,7 @@ export class PageTranslator {
       original,
       state: 'new',
       id: crypto.randomUUID(),
+      originalHeight,
     };
     this.records.set(element, record);
     this.updateStyle(record);
@@ -476,14 +520,18 @@ export class PageTranslator {
     record.state = 'queued';
     record.view.reset();
     this.queue.push(record);
-    this.pump();
+    if (!this.pumpTimer)
+      this.pumpTimer = setTimeout(() => { this.pumpTimer = null; this.pump(); }, 0);
   }
   async pump() {
     if (this.busy || !this.queue.length) return;
     this.busy = true;
     const generation = this.generation;
+    const profile = this.settings.profiles.find((item) => item.id === this.settings.roles.text);
+    const dispatchSize = Math.min(120, Math.max(24,
+      (profile?.batchSize || 8) * Math.min(profile?.concurrency || 4, this.settings.maxConcurrent) * 2));
     const records = this.queue
-      .splice(0, 10)
+      .splice(0, dispatchSize)
       .filter(
         (record) => record.element.isConnected && this.records.get(record.element) === record,
       );
@@ -492,6 +540,19 @@ export class PageTranslator {
     const valid = (record) => generation === this.generation &&
       this.records.get(record.element) === record && record.target.isConnected &&
       sourceText(record.element) === record.original;
+    const finish = (record, text) => {
+      if (record.renderPromise) return record.renderPromise;
+      record.translation = text;
+      record.renderPromise = (async () => {
+        const atBottom = bottomScrollContainers(record.element);
+        const replace = this.settings.mode === 'translation' || record.layoutMode === 'replace';
+        if (!(await record.view.finish(record.rich.render(text, { omitIcons: !replace }))) || !valid(record)) return;
+        record.state = 'done';
+        this.layout.enqueue(record);
+        for (const container of atBottom) container.scrollTop = container.scrollHeight;
+      })();
+      return record.renderPromise;
+    };
     try {
       if (!records.length) return;
       const translations = await translateItems(
@@ -506,10 +567,14 @@ export class PageTranslator {
           onPreview: (event) => {
             if (generation !== this.generation) return;
             if (event.type === 'translation-reset') {
-              for (const record of records) if (valid(record)) record.view.reset();
+              for (const record of records)
+                if (valid(record) && !record.renderPromise) record.view.reset();
             } else if (event.type === 'translation-preview') {
               const record = records.find((item) => item.id === event.itemId);
-              if (record && valid(record)) record.view.show(event.text);
+              if (record && valid(record) && !record.renderPromise) record.view.show(event.text);
+            } else if (event.type === 'translation-result') {
+              const record = records.find((item) => item.id === event.itemId);
+              if (record && valid(record)) finish(record, event.text);
             }
           },
         },
@@ -518,15 +583,12 @@ export class PageTranslator {
       await Promise.all(translations.map(async (translated) => {
         const record = records.find((item) => item.id === translated.id);
         if (!record || !valid(record)) return;
-        const atBottom = bottomScrollContainers(record.element);
-        if (!(await record.view.finish(record.rich.render(translated.text))) || !valid(record)) return;
-        record.state = 'done';
-        for (const container of atBottom) container.scrollTop = container.scrollHeight;
+        await finish(record, translated.text);
       }));
     } catch (error) {
       if (generation !== this.generation) return;
       for (const record of records) {
-        if (!valid(record)) continue;
+        if (!valid(record) || record.renderPromise) continue;
         record.view.reset();
         record.state = 'error';
         record.target.dataset.state = 'error';
@@ -559,6 +621,9 @@ export class PageTranslator {
     this.active = false;
     this.generation++;
     this.queue = [];
+    clearTimeout(this.pumpTimer);
+    this.pumpTimer = null;
+    this.layout.reset();
     this.viewport.disconnect();
     for (const id of this.jobs) rpc('cancel', { jobId: id }).catch(() => {});
     for (const record of this.records.values()) this.unwrap(record);
