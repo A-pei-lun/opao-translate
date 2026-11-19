@@ -17,14 +17,17 @@ import {
 } from './protocols.js';
 import { cacheGet, cacheSet, trimCache, cacheStats, clearCache, digest } from './cache.js';
 import { TranslationStreamParser, previewText } from '../shared/streaming.js';
+import { layoutSystem, parseLayoutPlan, readLayoutRequest } from '../shared/layout.js';
 
 const jobs = new Map();
 const queue = [];
+const layoutQueue = [];
+let layoutActive = false;
 const activeProfiles = new Map();
 const keyIndices = new Map();
 const logs = [];
 let active = 0;
-let globalLimit = 4;
+let globalLimit = 5;
 export const diagnostics = () => structuredClone(logs);
 export function safeError(error, settings) {
   let message = String(error?.message || error || '请求失败');
@@ -40,30 +43,35 @@ export function safeError(error, settings) {
 }
 function drain() {
   while (active < globalLimit) {
-    const index = queue.findIndex(
+    const pending = !layoutActive && layoutQueue.some(
+      (task) => (activeProfiles.get(task.profile.id) || 0) < task.profile.concurrency,
+    ) ? layoutQueue : queue;
+    const index = pending.findIndex(
       (task) => (activeProfiles.get(task.profile.id) || 0) < task.profile.concurrency,
     );
     if (index < 0) return;
-    const task = queue.splice(index, 1)[0];
+    const task = pending.splice(index, 1)[0];
     if (task.signal.aborted) {
       task.reject(task.signal.reason || new Error('已取消'));
       continue;
     }
     active++;
+    if (task.layout) layoutActive = true;
     activeProfiles.set(task.profile.id, (activeProfiles.get(task.profile.id) || 0) + 1);
     Promise.resolve()
       .then(task.work)
       .then(task.resolve, task.reject)
       .finally(() => {
         active--;
+        if (task.layout) layoutActive = false;
         activeProfiles.set(task.profile.id, activeProfiles.get(task.profile.id) - 1);
         drain();
       });
   }
 }
-function schedule(profile, signal, work) {
+function schedule(profile, signal, work, layout = false) {
   return new Promise((resolve, reject) => {
-    queue.push({ profile, signal, work, resolve, reject });
+    (layout ? layoutQueue : queue).push({ profile, signal, work, resolve, reject, layout });
     drain();
   });
 }
@@ -226,6 +234,12 @@ async function translate(settings, payload, signal, emit) {
     throw new Error('单次翻译需要 1 到 300 个文本段落');
   const expanded = [];
   const output = [];
+  const publishResult = (record) => {
+    if (!payload.progressive || signal.aborted || record.published || record.pieces.includes(null)) return;
+    record.published = true;
+    emit({ type: 'translation-result', sequence: ++sequence, itemId: record.id,
+      text: joinTranslatedParts(record.pieces, payload.targetLanguage || settings.targetLanguage) });
+  };
   const cacheBase = JSON.stringify({
     algorithm: 'text-v2',
     profile: { ...profile, apiKey: undefined, name: undefined },
@@ -286,6 +300,7 @@ async function translate(settings, payload, signal, emit) {
     size += item.text.length;
   }
   if (batch.length) batches.push(batch);
+  for (const record of output) publishResult(record);
   let completed = 0;
   await Promise.all(
     batches.map((items) =>
@@ -371,6 +386,7 @@ async function translate(settings, payload, signal, emit) {
               if (settings.cache) await cacheSet(item.key, text).catch(() => {});
             }
             flush();
+            for (const item of items) publishResult(item.original);
             completed += items.length;
             emit({ type: 'batch', completed, total: expanded.length });
             } catch (error) {
@@ -433,6 +449,28 @@ export async function runJob(settings, payload, owner, emit = () => {}) {
   jobs.set(id, job);
   job.promise = (async () => {
     if (payload.kind === 'translate') return translate(settings, payload, signal, emit);
+    if (payload.kind === 'layout') {
+      if (!settings.aiLayout) throw new Error('AI排版尚未开启');
+      const profile = resolveProfile(settings, 'layout');
+      if (!['chat', 'responses', 'claude', 'gemini'].includes(profile.protocol))
+        throw new Error('AI排版需要支持文本生成的模型服务，请在阅读与交互中选择排版服务');
+      const request = readLayoutRequest(payload, settings.aiLayoutFullHtml);
+      if (settings.maskPrivacy) {
+        const masked = (text) => maskText(text, true, settings.privacyPatterns).text;
+        request.title = masked(request.title);
+        for (const block of request.blocks) {
+          block.source = masked(block.source);
+          block.translation = masked(block.translation);
+        }
+        if (request.html) request.html = masked(request.html);
+      }
+      return schedule(profile, signal, () => attempt(profile, settings, signal, 'layout',
+        async (key) => {
+          const text = await generate({ ...profile, stream: false },
+            { system: layoutSystem, prompt: JSON.stringify(request) }, { key, signal });
+          return parseLayoutPlan(text, request.blocks);
+        }, false, { page: payload.diagnosticPage, site: payload.diagnosticSite, jobId: id }), true);
+    }
     if (payload.kind === 'cache-stats') return cacheStats();
     if (payload.kind === 'clear-cache') return clearCache();
     if (payload.kind === 'logs') return diagnostics();
