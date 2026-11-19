@@ -38,9 +38,9 @@ export function createProfile(id = crypto.randomUUID()) {
     capabilities: { text: true, vision: false, asr: false },
     enabled: true,
     timeout: 120,
-    concurrency: 3,
+    concurrency: 4,
     retries: 2,
-    batchSize: 5,
+    batchSize: 8,
     maxChars: 5000,
     stream: false,
     temperature: '',
@@ -56,8 +56,9 @@ export function createProfile(id = crypto.randomUUID()) {
 export function defaults() {
   return {
     version: 1,
+    throughputRevision: 1,
     profiles: [createProfile('main')],
-    roles: { text: 'main', input: '', vision: '', subtitle: '', asr: '' },
+    roles: { text: 'main', input: '', vision: '', subtitle: '', asr: '', layout: '' },
     sourceLanguage: 'auto',
     targetLanguage: 'zh-CN',
     inputTargetLanguage: 'en',
@@ -76,6 +77,8 @@ export function defaults() {
     floatingButton: true,
     translateTitle: false,
     replaceTraditionalChinese: false,
+    aiLayout: false,
+    aiLayoutFullHtml: false,
     lazy: true,
     autoSites: [],
     blockSites: [],
@@ -86,7 +89,7 @@ export function defaults() {
     cache: true,
     cacheDays: 7,
     cacheEntries: 10000,
-    maxConcurrent: 4,
+    maxConcurrent: 5,
     subtitlePretranslate: true,
     subtitleFontSize: 22,
     subtitleSelector: '',
@@ -124,9 +127,13 @@ export function normalizeSettings(raw = {}) {
   const data = jsonObject(raw);
   const sourceProfiles = Array.isArray(data.profiles) ? data.profiles : base.profiles;
   const seen = new Set();
+  let upgradedThroughput = false;
   const profiles = sourceProfiles.slice(0, 100).map((value) => {
     const initial = createProfile(text(value?.id, crypto.randomUUID(), 80));
     const profile = jsonObject(value);
+    const upgradeThroughput = data.throughputRevision !== 1 &&
+      profile.concurrency === 3 && profile.batchSize === 5;
+    if (upgradeThroughput) upgradedThroughput = true;
     if (seen.has(initial.id)) initial.id = crypto.randomUUID();
     seen.add(initial.id);
     return {
@@ -148,9 +155,9 @@ export function normalizeSettings(raw = {}) {
       },
       enabled: profile.enabled !== false,
       timeout: number(profile.timeout, 120, 5, 600),
-      concurrency: number(profile.concurrency, 3, 1, 20),
+      concurrency: upgradeThroughput ? 4 : number(profile.concurrency, initial.concurrency, 1, 20),
       retries: number(profile.retries, 2, 0, 5),
-      batchSize: number(profile.batchSize, 5, 1, 30),
+      batchSize: upgradeThroughput ? 8 : number(profile.batchSize, initial.batchSize, 1, 30),
       maxChars: number(profile.maxChars, 5000, 200, 30000),
       stream: Boolean(profile.stream),
       temperature: text(String(profile.temperature ?? ''), '', 20),
@@ -198,6 +205,8 @@ export function normalizeSettings(raw = {}) {
     'floatingButton',
     'translateTitle',
     'replaceTraditionalChinese',
+    'aiLayout',
+    'aiLayoutFullHtml',
     'lazy',
     'maskPrivacy',
     'cache',
@@ -244,6 +253,7 @@ export function normalizeSettings(raw = {}) {
     ['asrChunkSeconds', 5, 60],
   ])
     next[key] = number(data[key], base[key], min, max);
+  if (upgradedThroughput && data.maxConcurrent === 4) next.maxConcurrent = 5;
   if (!['system', 'light', 'dark'].includes(next.theme)) next.theme = 'system';
   if (!['bilingual', 'translation'].includes(next.mode)) next.mode = 'bilingual';
   if (!TRANSLATION_STYLES.some(([id]) => id === next.translationStyle))
@@ -276,6 +286,8 @@ export function translationSettingsChanged(previous, next) {
         'blockSites',
         'translateTitle',
         'replaceTraditionalChinese',
+        'aiLayout',
+        'aiLayoutFullHtml',
         'lazy',
         'serviceFallback',
       ].map((key) => [
@@ -291,13 +303,15 @@ export function publicSettings(settings) {
   return {
     ...settings,
     profiles: settings.profiles.map(
-      ({ id, name, protocol, model, baseUrl, enabled, capabilities }) => ({
+      ({ id, name, protocol, model, baseUrl, enabled, capabilities, concurrency, batchSize }) => ({
         id,
         name,
         protocol,
         model,
         enabled,
         capabilities,
+        concurrency,
+        batchSize,
         configured: Boolean(baseUrl && (model || TRADITIONAL_PROTOCOLS.includes(protocol))),
       }),
     ),
@@ -311,7 +325,7 @@ export function resolveProfile(settings, role = 'text', explicitId) {
   const profile = settings.profiles.find((item) => item.id === id && item.enabled);
   if (!profile)
     throw new Error(
-      `请先在设置中为${{ vision: '图片', asr: '语音', input: '输入', subtitle: '字幕', text: '文本' }[role] || role}选择服务`,
+      `请先在设置中为${{ vision: '图片', asr: '语音', input: '输入', subtitle: '字幕', text: '文本', layout: '排版' }[role] || role}选择服务`,
     );
   if (!profile.baseUrl || (!profile.model && !TRADITIONAL_PROTOCOLS.includes(profile.protocol)))
     throw new Error(`请补全“${profile.name}”的接口地址和模型名`);

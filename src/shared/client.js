@@ -26,7 +26,7 @@ function rawRpc(kind, payload = {}) {
     let sequence = 0;
     handler({ type:'translation-reset' });
     unsubscribe = onProgress(payload.jobId, (event) => {
-      if (event.type !== 'translation-preview' || event.progressToken !== progressToken ||
+      if (!['translation-preview', 'translation-result'].includes(event.type) || event.progressToken !== progressToken ||
           !Number.isSafeInteger(event.sequence) || event.sequence <= sequence) return;
       sequence = event.sequence;
       handler(event);

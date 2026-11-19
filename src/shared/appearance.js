@@ -127,6 +127,27 @@ export const translationCss = `
 .opao-target[data-layout="navigation"] {
   margin: min(var(--opao-gap, 0.65em), 0.25em) 0 0;
 }
+.opao-target[data-layout="compact"],
+.opao-target[data-layout="rail"],
+.opao-target[data-presentation="compact"],
+.opao-target[data-presentation="replace"] {
+  margin: 0.15em 0 0;
+  line-height: 1.35 !important;
+}
+.opao-target[data-layout="rail"] {
+  font-size: min(var(--opao-size, 100%), 12px) !important;
+  flex: 0 1 auto;
+}
+.opao-target[data-presentation="inline"] {
+  display: inline !important;
+  width: auto;
+  flex: 0 1 auto;
+  margin: 0 0 0 0.4em;
+  line-height: 1.35 !important;
+}
+.opao-target[data-presentation="stack"] {
+  margin: var(--opao-gap, 0.65em) 0 0.75em;
+}
 .opao-target[data-state="error"] {
   color: #c0392b;
 }
