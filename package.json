@@ -1,6 +1,6 @@
 {
   "name": "opao-translate",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "type": "module",
   "description": "O泡翻译个人自用 Edge 扩展",
@@ -8,6 +8,7 @@
     "build": "node scripts/build.mjs",
     "test": "node --test tests/*.test.mjs",
     "test:browser": "node tests/browser.mjs",
+    "test:settings": "node tests/settings-browser.mjs",
     "test:layout": "node tests/layout.mjs",
     "test:ai-layout": "node tests/ai-layout-browser.mjs",
     "test:stream": "node tests/stream-browser.mjs",
