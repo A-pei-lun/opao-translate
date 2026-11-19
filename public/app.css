@@ -52,6 +52,24 @@
   color: var(--c-ink);
 }
 
+.ai-layout-settings {
+  padding: var(--space-5);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-md);
+  background: var(--c-surface-2);
+}
+.ai-layout-options {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-4) 0 0 var(--space-2);
+  padding: var(--space-3) 0 0 var(--space-4);
+  border: 0;
+  border-inline-start: 2px solid var(--c-line-strong);
+  min-width: 0;
+}
+.ai-layout-options legend { color: var(--c-muted); padding: 0 var(--space-2); }
+.ai-layout-options:disabled { opacity: 0.55; }
+
 :root[data-theme='dark'] {
   color-scheme: dark;
   --c-paper: #121a22;
