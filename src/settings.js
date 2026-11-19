@@ -138,6 +138,26 @@ function header(title, description) {
     el('div', {}, el('h1', { text: title }), el('p', { text: description })),
   );
 }
+function aiLayoutSettings() {
+  const options = el('fieldset', { class: 'ai-layout-options', disabled: !settings.aiLayout });
+  const profiles = settings.profiles.filter((profile) => profile.enabled &&
+    profile.capabilities.text && ['chat', 'responses', 'claude', 'gemini'].includes(profile.protocol));
+  options.append(
+    el('legend', { text: 'AI排版选项' }),
+    field('排版服务', selectFor(settings.roles, 'layout', [
+      ['', '跟随网页与文本服务'], ...profiles.map((profile) => [profile.id, profile.name]),
+    ])),
+    check('发送完整网页 HTML', settings, 'aiLayoutFullHtml'),
+    el('p', { class: 'hint', text: '默认仅发送页面结构和待排版区域。开启后发送整页 HTML（移除脚本、表单值和插件界面），可能增加耗时和用量。' }),
+  );
+  return el('section', { class: 'ai-layout-settings', 'aria-label': 'AI排版实验设置' },
+    el('div', { class: 'fallback-heading' },
+      check('AI排版', settings, 'aiLayout', () => { options.disabled = !settings.aiLayout; }),
+      el('span', { class: 'tag', text: '实验性' })),
+    el('p', { class: 'hint', text: '由模型为已翻译区域选择显示方式，翻译会继续进行。默认关闭；排版失败时保留本地布局。需要支持文本生成的模型服务。' }),
+    options,
+  );
+}
 function renderRoles() {
   rolesArea.replaceChildren(
     el('h3', { text: '把模型分配给翻译场景' }),
@@ -802,6 +822,7 @@ function renderReading() {
         field('译文颜色，留空跟随网页', color),
       ),
       fontSettings,
+      aiLayoutSettings(),
       el(
         'div',
         { class: 'compact-stack' },
