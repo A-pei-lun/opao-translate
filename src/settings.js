@@ -1,5 +1,13 @@
 import { createProfile, LANGUAGES, PROTOCOLS, TRADITIONAL_PROTOCOLS } from './shared/config.js';
-import { rpc, el, applyTheme, status, jobId, textFile, profileOptions } from './shared/client.js';
+import {
+  rpc,
+  el,
+  applyTheme as applyClientTheme,
+  status,
+  jobId,
+  textFile,
+  profileOptions,
+} from './shared/client.js';
 import {
   TRANSLATION_STYLES,
   FONT_PRESETS,
@@ -12,28 +20,55 @@ document.head.append(el('style', { text: translationCss }));
 let settings,
   selected,
   currentSection = 'services';
+let hasChanges = false;
+let fieldSequence = 0;
+const sections = [
+  ['services', '服务与模型'],
+  ['reading', '阅读与交互'],
+  ['media', '图片与字幕'],
+  ['rules', '站点与术语'],
+  ['data', '数据与诊断'],
+];
 const invalid = new Map();
 const jsonDrafts = new Map();
 const notice = el('div', { class: 'status', role: 'status', 'aria-live': 'polite' });
-const main = el('main', { class: 'settings-main', id: 'settings-main' });
+const main = el('main', { class: 'settings-main', id: 'settings-main', tabindex: '-1' });
 const nav = el('nav', { class: 'sidebar', 'aria-label': '设置分类' });
 const rolesArea = el('div', { class: 'roles' });
 const fallbackArea = el('section', { class: 'fallback-settings', 'aria-label': '超时自动切换' });
+const systemTheme = matchMedia('(prefers-color-scheme: dark)');
+function applyTheme(value) {
+  applyClientTheme(value);
+  const dark = value.theme === 'dark' || (value.theme === 'system' && systemTheme.matches);
+  document.querySelector('meta[name="theme-color"]').content = dark ? '#121a22' : '#f4f7f9';
+}
 function dirty() {
+  hasChanges = true;
   status(notice, '有未保存的修改');
 }
 function field(label, input, hint = '') {
-  if (input.matches('input,select,textarea')) input.setAttribute('aria-label', label);
+  const control = input.matches('input,select,textarea')
+    ? input
+    : input.querySelector('input,select,textarea');
+  const id = control.id || 'setting-' + ++fieldSequence;
+  control.id = id;
+  control.name ||= id;
+  control.setAttribute('aria-label', label);
+  if (hint) control.setAttribute('aria-describedby', id + '-hint');
   return el(
-    'label',
+    'div',
     { class: 'field' },
-    el('span', { text: label }),
-    input,
-    hint && el('span', { class: 'hint', text: hint }),
+    el(
+      'div',
+      { class: 'field-copy' },
+      el('label', { for: id, text: label }),
+      hint && el('p', { class: 'hint', id: id + '-hint', text: hint }),
+    ),
+    el('div', { class: 'field-control' }, input),
   );
 }
 function inputFor(object, key, type = 'text', attributes = {}) {
-  const input = el('input', { type, ...attributes });
+  const input = el('input', { type, name: key, autocomplete: 'off', ...attributes });
   input.value = object[key] ?? '';
   input.oninput = () => {
     object[key] = input.value;
@@ -52,7 +87,7 @@ function numberFor(object, key, min, max, step = 1) {
 function selectFor(object, key, options, extra) {
   const select = el(
     'select',
-    {},
+    { name: key },
     options.map(([value, label]) =>
       el('option', { value, selected: String(object[key]) === String(value) }, label),
     ),
@@ -64,18 +99,58 @@ function selectFor(object, key, options, extra) {
   };
   return select;
 }
-function check(label, object, key, extra) {
-  const input = el('input', { type: 'checkbox', checked: object[key] });
+function check(label, object, key, extra, hint = '') {
+  const input = el('input', {
+    type: 'checkbox',
+    name: key,
+    checked: object[key],
+    'aria-label': label,
+  });
+  const description =
+    hint &&
+    el('span', {
+      class: 'hint',
+      id: 'setting-hint-' + ++fieldSequence,
+      text: hint,
+    });
+  if (description) input.setAttribute('aria-describedby', description.id);
   input.onchange = () => {
     object[key] = input.checked;
     dirty();
     extra?.();
   };
-  return el('label', { class: 'check' }, input, label);
+  return el(
+    'label',
+    { class: 'check' },
+    el('span', { class: 'check-copy' }, el('span', { text: label }), description),
+    input,
+  );
+}
+function group(title, description, ...children) {
+  return el(
+    'section',
+    { class: 'settings-group', 'aria-label': title },
+    el(
+      'div',
+      { class: 'group-heading' },
+      el('h2', { text: title }),
+      description && el('p', { class: 'hint', text: description }),
+    ),
+    el('div', { class: 'group-content' }, ...children),
+  );
+}
+function disclosure(title, ...children) {
+  return el(
+    'details',
+    { class: 'settings-details' },
+    el('summary', { text: title }),
+    el('div', { class: 'details-content' }, ...children),
+  );
 }
 function jsonField(label, object, key, identity, hint = '') {
-  const textarea = el('textarea', { rows: 5, spellcheck: 'false' });
+  const textarea = el('textarea', { rows: 5, name: key, spellcheck: 'false', autocomplete: 'off' });
   const id = identity + ':' + key;
+  const error = el('p', { class: 'field-error', role: 'status', 'aria-live': 'polite' });
   textarea.value = jsonDrafts.get(id) ?? JSON.stringify(object[key], null, 2);
   textarea.oninput = () => {
     jsonDrafts.set(id, textarea.value);
@@ -85,16 +160,29 @@ function jsonField(label, object, key, identity, hint = '') {
       object[key] = value;
       invalid.delete(id);
       textarea.setCustomValidity('');
+      error.textContent = '';
     } catch {
       invalid.set(id, label + ' 的 JSON 格式无效');
       textarea.setCustomValidity('JSON 格式无效');
+      error.textContent = 'JSON 格式无效，请检查括号、引号和逗号。';
     }
     dirty();
   };
-  return field(label, textarea, hint);
+  const result = field(label, textarea, hint);
+  error.id = textarea.id + '-error';
+  textarea.setAttribute(
+    'aria-describedby',
+    [hint && textarea.id + '-hint', error.id].filter(Boolean).join(' '),
+  );
+  if (invalid.has(id)) {
+    textarea.setCustomValidity('JSON 格式无效');
+    error.textContent = 'JSON 格式无效，请检查括号、引号和逗号。';
+  }
+  result.querySelector('.field-control').append(error);
+  return result;
 }
 function linesField(label, key, hint) {
-  const area = el('textarea', { rows: 5 });
+  const area = el('textarea', { rows: 5, name: key, spellcheck: 'false', autocomplete: 'off' });
   area.value = settings[key].join('\n');
   area.oninput = () => {
     settings[key] = area.value
@@ -106,18 +194,26 @@ function linesField(label, key, hint) {
   return field(label, area, hint);
 }
 async function save() {
-  const controls = [
-    ...main.querySelectorAll('input,select,textarea,button'),
-    document.getElementById('save-settings'),
-  ];
+  const saveButton = document.getElementById('save-settings');
+  const controls = [...main.querySelectorAll('input,select,textarea,button'), saveButton];
+  const disabledBefore = controls.map((node) => node.disabled);
   try {
-    if (invalid.size) throw new Error([...invalid.values()][0]);
     const fields = [...main.querySelectorAll('input,textarea,select')];
-    if (fields.some((input) => !input.reportValidity())) return false;
+    const firstInvalid = fields.find((input) => !input.validity.valid);
+    if (firstInvalid) {
+      for (let parent = firstInvalid.parentElement; parent !== main; parent = parent.parentElement)
+        if (parent.tagName === 'DETAILS') parent.open = true;
+      firstInvalid.focus();
+      firstInvalid.reportValidity();
+      return false;
+    }
+    if (invalid.size) throw new Error([...invalid.values()][0]);
     controls.forEach((node) => {
       node.disabled = true;
     });
+    saveButton.textContent = '保存中…';
     settings = await rpc('save-settings', { settings });
+    hasChanges = false;
     applyTheme(settings);
     render();
     status(notice, '设置已保存');
@@ -126,8 +222,9 @@ async function save() {
     status(notice, error.message, true);
     return false;
   } finally {
-    controls.forEach((node) => {
-      node.disabled = false;
+    saveButton.textContent = '保存设置';
+    controls.forEach((node, index) => {
+      node.disabled = disabledBefore[index];
     });
   }
 }
@@ -135,35 +232,66 @@ function header(title, description) {
   return el(
     'div',
     { class: 'section-heading' },
-    el('div', {}, el('h1', { text: title }), el('p', { text: description })),
+    el('div', {}, el('h1', { text: title, tabindex: '-1' }), el('p', { text: description })),
   );
 }
 function aiLayoutSettings() {
   const options = el('fieldset', { class: 'ai-layout-options', disabled: !settings.aiLayout });
-  const profiles = settings.profiles.filter((profile) => profile.enabled &&
-    profile.capabilities.text && ['chat', 'responses', 'claude', 'gemini'].includes(profile.protocol));
+  const profiles = settings.profiles.filter(
+    (profile) =>
+      profile.enabled &&
+      profile.capabilities.text &&
+      ['chat', 'responses', 'claude', 'gemini'].includes(profile.protocol),
+  );
   options.append(
     el('legend', { text: 'AI排版选项' }),
-    field('排版服务', selectFor(settings.roles, 'layout', [
-      ['', '跟随网页与文本服务'], ...profiles.map((profile) => [profile.id, profile.name]),
-    ])),
-    check('发送完整网页 HTML', settings, 'aiLayoutFullHtml'),
-    el('p', { class: 'hint', text: '默认仅发送页面结构和待排版区域。开启后发送整页 HTML（移除脚本、表单值和插件界面），可能增加耗时和用量。' }),
+    field(
+      '排版服务',
+      selectFor(settings.roles, 'layout', [
+        ['', '跟随网页与文本服务'],
+        ...profiles.map((profile) => [profile.id, profile.name]),
+      ]),
+    ),
+    check(
+      '发送完整网页 HTML',
+      settings,
+      'aiLayoutFullHtml',
+      undefined,
+      '默认只发送页面结构和待排版区域。开启后发送清理过的整页 HTML，可能增加耗时和用量。',
+    ),
   );
-  return el('section', { class: 'ai-layout-settings', 'aria-label': 'AI排版实验设置' },
-    el('div', { class: 'fallback-heading' },
-      check('AI排版', settings, 'aiLayout', () => { options.disabled = !settings.aiLayout; }),
-      el('span', { class: 'tag', text: '实验性' })),
-    el('p', { class: 'hint', text: '由模型为已翻译区域选择显示方式，翻译会继续进行。默认关闭；排版失败时保留本地布局。需要支持文本生成的模型服务。' }),
+  const section = group(
+    'AI 排版',
+    '实验功能，需要支持文本生成的模型服务。',
+    check(
+      'AI排版',
+      settings,
+      'aiLayout',
+      () => {
+        options.disabled = !settings.aiLayout;
+      },
+      '为已翻译区域选择显示方式，翻译继续进行；排版失败时保留本地布局。默认关闭。',
+    ),
     options,
   );
+  section.classList.add('ai-layout-settings');
+  section.querySelector('.group-heading').append(el('span', { class: 'tag', text: '实验性' }));
+  return section;
 }
 function renderRoles() {
   rolesArea.replaceChildren(
-    el('h3', { text: '把模型分配给翻译场景' }),
     el(
       'div',
-      { class: 'grid-three' },
+      { class: 'group-heading' },
+      el('h2', { text: '把模型分配给翻译场景' }),
+      el('p', {
+        class: 'hint',
+        text: '不同场景可以分别选择服务；更换服务名称后，这里会同步更新。',
+      }),
+    ),
+    el(
+      'div',
+      { class: 'grid-three group-content' },
       ...[
         ['text', '网页与文本', 'text'],
         ['input', '输入与写作', 'text'],
@@ -200,9 +328,15 @@ function renderFallback() {
     class: 'tag',
     text: fallback.enabled ? '已开启，仅记忆当前页面' : '未启用',
   });
-  const toggle = check('服务超时后自动切换', fallback, 'enabled', () => {
-    state.textContent = fallback.enabled ? '已开启，仅记忆当前页面' : '未启用';
-  });
+  const toggle = check(
+    '服务超时后自动切换',
+    fallback,
+    'enabled',
+    () => {
+      state.textContent = fallback.enabled ? '已开启，仅记忆当前页面' : '未启用';
+    },
+    '当前服务超时后，按下面的顺序尝试其他服务。默认关闭。',
+  );
   const move = (profile, offset) => {
     const index = ordered.indexOf(profile);
     const other = ordered[index + offset];
@@ -223,12 +357,13 @@ function renderFallback() {
       ?.focus();
   };
   fallbackArea.replaceChildren(
-    el('div', { class: 'fallback-heading' }, el('h3', { text: '超时自动切换' }), state),
+    el(
+      'div',
+      { class: 'fallback-heading group-heading' },
+      el('h2', { text: '超时自动切换' }),
+      state,
+    ),
     toggle,
-    el('p', {
-      class: 'hint',
-      text: '先用当前场景选定的服务，超时后按下列顺序尝试其余服务。成功后本页继续使用它，刷新或进入其他页面时重置。默认关闭。',
-    }),
     el(
       'ol',
       { class: 'fallback-order', 'aria-label': '备用服务顺序' },
@@ -277,28 +412,36 @@ function renderFallback() {
       : []),
     el('p', {
       class: 'hint',
-      text: '只在超时时切换，跳过停用、未配置及能力不匹配的服务。超时直接尝试下一项；关闭后按原服务的重试设置执行。图片仅使用支持视觉的备用服务。',
+      text: '只在超时时切换，跳过停用、未配置及能力不匹配的服务。成功服务仅用于当前页面，刷新后重置。关闭后按原服务的重试设置执行；图片只使用视觉服务。',
     }),
   );
 }
 function renderServices() {
   renderRoles();
-  const list = el('div', { class: 'service-list' });
+  const list = el('div', { class: 'service-list', 'aria-label': '已添加的服务' });
   const form = el('div', { class: 'form-block' });
   const board = el('div', { class: 'service-board' }, list, form);
   function draw() {
     if (!settings.profiles.some((profile) => profile.id === selected))
       selected = settings.profiles[0]?.id;
     list.replaceChildren(
+      el(
+        'div',
+        { class: 'service-list-heading' },
+        el('h2', { text: '我的服务' }),
+        el('span', { class: 'hint', text: String(settings.profiles.length) + ' 个' }),
+      ),
       ...settings.profiles.map((profile) =>
         el(
           'button',
           {
             class: 'service-item',
+            title: profile.name,
             'aria-pressed': profile.id === selected,
             onclick: () => {
               selected = profile.id;
               draw();
+              list.querySelector('[aria-pressed="true"]').focus();
             },
           },
           el('strong', { text: profile.name }),
@@ -307,6 +450,7 @@ function renderServices() {
         ),
       ),
       el('button', {
+        class: 'add-service',
         text: '添加服务',
         onclick: () => {
           const profile = createProfile();
@@ -318,6 +462,7 @@ function renderServices() {
           dirty();
           renderRoles();
           draw();
+          form.querySelector('input[name="name"]').focus();
         },
       }),
     );
@@ -328,11 +473,11 @@ function renderServices() {
       );
       return;
     }
-    const testStatus = el('div', { class: 'status', role: 'status' });
+    const testStatus = el('div', { class: 'status', role: 'status', 'aria-live': 'polite' });
     const modelList = el('datalist', { id: 'available-models' });
     const model = inputFor(profile, 'model', 'text', {
       list: 'available-models',
-      placeholder: '填写模型 ID，或点击获取模型列表',
+      placeholder: '例如 gpt-4.1-mini…',
     });
     model.oninput = () => {
       profile.model = model.value;
@@ -344,7 +489,7 @@ function renderServices() {
     const apiKey = inputFor(profile, 'apiKey', 'password', {
       autocomplete: 'off',
       'aria-label': 'API Key',
-      placeholder: '支持留空，多把密钥用逗号分隔',
+      placeholder: '支持留空，多把密钥用逗号分隔…',
     });
     const test = async (kind) => {
       status(testStatus, '正在请求接口…');
@@ -383,7 +528,7 @@ function renderServices() {
     ];
     const template = el(
       'select',
-      {},
+      { name: 'service-template' },
       templates.map(([value, label]) => el('option', { value }, label)),
     );
     template.onchange = () => {
@@ -417,7 +562,7 @@ function renderServices() {
     const nameInput = inputFor(profile, 'name', 'text', {
       required: true,
       maxlength: 100,
-      placeholder: '例如 豆腐中转（主力）、备用站（便宜）',
+      placeholder: '例如 主力中转站…',
     });
     nameInput.oninput = () => {
       profile.name = nameInput.value;
@@ -430,7 +575,7 @@ function renderServices() {
     form.replaceChildren(
       el(
         'div',
-        { class: 'row' },
+        { class: 'row service-editor-heading' },
         el('h2', { text: '服务配置' }),
         el('span', { class: 'tag', text: PROTOCOLS[profile.protocol] }),
       ),
@@ -454,23 +599,15 @@ function renderServices() {
       field(
         'API 地址',
         inputFor(profile, 'baseUrl', 'url', {
-          placeholder: 'https://your-api.example/v1 或完整接口地址',
+          placeholder: 'https://your-api.example/v1…',
         }),
         '支持根地址、版本路径和标准完整接口路径。自定义 HTTP JSON 协议按地址原样请求。',
-      ),
-      field(
-        '端点路径处理',
-        selectFor(profile, 'endpointMode', [
-          ['auto', '自动补全标准协议路径'],
-          ['exact', '按完整地址原样请求'],
-        ]),
-        '非标准路径或网关别名可选择原样请求，查询参数会保留。',
       ),
       field(
         'API Key',
         el(
           'div',
-          { class: 'row' },
+          { class: 'row secret-control' },
           apiKey,
           el('button', {
             text: '显示',
@@ -494,7 +631,7 @@ function renderServices() {
       el('h3', { text: '接口能力' }),
       el(
         'div',
-        { class: 'row' },
+        { class: 'row choice-set' },
         check('文本翻译', profile.capabilities, 'text', renderRoles),
         check('视觉输入', profile.capabilities, 'vision', renderRoles),
         check('语音识别', profile.capabilities, 'asr', renderRoles),
@@ -503,83 +640,101 @@ function renderServices() {
         class: 'hint',
         text: '图片场景需要视觉能力。语音场景使用转录协议及对应模型。勾选能力用于明确分派，实际兼容性通过样例检查。',
       }),
-      el(
-        'div',
-        { class: 'grid-three' },
-        field('超时，秒', numberFor(profile, 'timeout', 5, 600)),
-        field('并发数', numberFor(profile, 'concurrency', 1, 20)),
-        field('失败重试次数', numberFor(profile, 'retries', 0, 5)),
-        field('每批段落数', numberFor(profile, 'batchSize', 1, 30)),
-        field('每批字符上限', numberFor(profile, 'maxChars', 200, 30000)),
-        field(
-          '温度，留空跟随接口',
-          inputFor(profile, 'temperature', 'number', { step: '.1', min: 0, max: 2 }),
+      disclosure(
+        '请求参数与性能',
+        el(
+          'div',
+          { class: 'grid-three' },
+          field('超时，秒', numberFor(profile, 'timeout', 5, 600)),
+          field('并发数', numberFor(profile, 'concurrency', 1, 20)),
+          field('失败重试次数', numberFor(profile, 'retries', 0, 5)),
+          field('每批段落数', numberFor(profile, 'batchSize', 1, 30)),
+          field('每批字符上限', numberFor(profile, 'maxChars', 200, 30000)),
+          field(
+            '温度，留空跟随接口',
+            inputFor(profile, 'temperature', 'number', { step: '.1', min: 0, max: 2 }),
+          ),
         ),
+        el(
+          'div',
+          { class: 'grid-two' },
+          field('输出 token 上限，选填', inputFor(profile, 'maxTokens', 'number', { min: 1 })),
+          field(
+            'Chat token 字段',
+            selectFor(profile, 'tokenField', [
+              ['max_completion_tokens', 'max_completion_tokens'],
+              ['max_tokens', 'max_tokens'],
+            ]),
+          ),
+        ),
+        check('使用流式输出', profile, 'stream'),
       ),
-      el(
-        'div',
-        { class: 'grid-two' },
-        field('输出 token 上限，选填', inputFor(profile, 'maxTokens', 'number', { min: 1 })),
+      disclosure(
+        '高级接口与翻译指令',
         field(
-          'Chat token 字段',
-          selectFor(profile, 'tokenField', [
-            ['max_completion_tokens', 'max_completion_tokens'],
-            ['max_tokens', 'max_tokens'],
+          '端点路径处理',
+          selectFor(profile, 'endpointMode', [
+            ['auto', '自动补全标准协议路径'],
+            ['exact', '按完整地址原样请求'],
           ]),
+          '非标准路径或网关别名可选择原样请求，查询参数会保留。',
         ),
+        field(
+          '转录响应格式',
+          selectFor(profile, 'responseFormat', [
+            ['json', 'JSON'],
+            ['verbose_json', '含时间戳的 JSON'],
+            ['srt', 'SRT 字幕'],
+            ['vtt', 'VTT 字幕'],
+            ['text', '纯文本'],
+            ['diarized_json', '说话人分段 JSON'],
+          ]),
+          '响应格式由语音模型决定。缺少精确时间戳时使用录音片段时间。',
+        ),
+        field(
+          '模型列表地址，选填',
+          inputFor(profile, 'modelsUrl', 'url', {
+            placeholder: '例如 https://your-api.example/v1/models…',
+          }),
+        ),
+        jsonField(
+          '自定义请求头',
+          profile,
+          'headers',
+          profile.id,
+          '例如 Microsoft 的区域字段，或兼容接口要求的请求头。',
+        ),
+        jsonField(
+          '自定义请求体',
+          profile,
+          'body',
+          profile.id,
+          '字段会覆盖默认参数。自定义 HTTP JSON 支持 {{text}}、{{from}}、{{to}}、{{model}}、{{key}}。',
+        ),
+        field(
+          '自定义 HTTP 译文字段路径',
+          inputFor(profile, 'responsePath', 'text', { placeholder: '例如 data.translation…' }),
+        ),
+        (() => {
+          const area = el('textarea', { rows: 4, name: 'profile-prompt', autocomplete: 'off' });
+          area.value = profile.prompt;
+          area.oninput = () => {
+            profile.prompt = area.value;
+            dirty();
+          };
+          return field('该服务的补充翻译指令', area);
+        })(),
       ),
-      check('使用流式输出', profile, 'stream'),
-      field(
-        '转录响应格式',
-        selectFor(profile, 'responseFormat', [
-          ['json', 'JSON'],
-          ['verbose_json', '含时间戳的 JSON'],
-          ['srt', 'SRT 字幕'],
-          ['vtt', 'VTT 字幕'],
-          ['text', '纯文本'],
-          ['diarized_json', '说话人分段 JSON'],
-        ]),
-        '响应格式由语音模型决定。缺少精确时间戳时使用录音片段时间。',
-      ),
-      field(
-        '模型列表地址，选填',
-        inputFor(profile, 'modelsUrl', 'url', { placeholder: '留空按接口协议生成' }),
-      ),
-      jsonField(
-        '自定义请求头',
-        profile,
-        'headers',
-        profile.id,
-        '例如 Microsoft 的区域字段，或兼容接口要求的请求头。',
-      ),
-      jsonField(
-        '自定义请求体',
-        profile,
-        'body',
-        profile.id,
-        '字段会覆盖默认参数。自定义 HTTP JSON 支持 {{text}}、{{from}}、{{to}}、{{model}}、{{key}}。',
-      ),
-      field(
-        '自定义 HTTP 译文字段路径',
-        inputFor(profile, 'responsePath', 'text', { placeholder: '例如 data.translation' }),
-      ),
-      (() => {
-        const area = el('textarea', { rows: 4 });
-        area.value = profile.prompt;
-        area.oninput = () => {
-          profile.prompt = area.value;
-          dirty();
-        };
-        return field('该服务的补充翻译指令', area);
-      })(),
       el(
         'div',
-        { class: 'button-row' },
+        { class: 'button-row service-actions' },
         check('启用此服务', profile, 'enabled', renderRoles),
         el('button', {
           class: 'quiet danger',
           text: '移除此服务',
           onclick: () => {
+            if (!confirm('移除“' + (profile.name.trim() || '未命名服务') + '”？保存设置后生效。'))
+              return;
             settings.profiles = settings.profiles.filter((value) => value !== profile);
             settings.serviceFallback.order = settings.serviceFallback.order.filter(
               (id) => id !== profile.id,
@@ -599,8 +754,8 @@ function renderServices() {
   }
   draw();
   main.replaceChildren(
-    header('服务与模型', '把你的接口留在自己的控制之下。网页、图片和语音可以使用不同服务。'),
-    el('div', { class: 'stack' }, rolesArea, fallbackArea, board),
+    header('服务与模型', '管理翻译接口，再把合适的服务分配给网页、图片和语音。'),
+    el('div', { class: 'settings-sections' }, board, rolesArea, fallbackArea),
   );
 }
 function renderReading() {
@@ -661,7 +816,7 @@ function renderReading() {
     refresh();
   };
   const color = inputFor(settings, 'translationColor', 'text', {
-    placeholder: '留空跟随网页，例如 #086F83',
+    placeholder: '例如 #086F83，留空跟随网页…',
   });
   color.oninput = () => {
     settings.translationColor = color.value;
@@ -703,7 +858,7 @@ function renderReading() {
   }
   const preset = el(
     'select',
-    { 'aria-label': '译文字体' },
+    { name: 'translation-font', 'aria-label': '译文字体' },
     ...FONT_PRESETS.map(([value, label]) => el('option', { value }, label)),
     el('option', { value: '__custom' }, '自定义字体'),
   );
@@ -712,8 +867,10 @@ function renderReading() {
     : '__custom';
   const customFont = el('input', {
     type: 'text',
+    name: 'custom-translation-font',
+    autocomplete: 'off',
     maxlength: 180,
-    placeholder: '例如 Noto Serif SC, SimSun, serif',
+    placeholder: '例如 Noto Serif SC, SimSun, serif…',
     'aria-label': '自定义译文字体',
   });
   customFont.value = settings.translationFont;
@@ -747,11 +904,11 @@ function renderReading() {
     };
   const fontSettings = el(
     'details',
-    { class: 'reading-details' },
+    { class: 'reading-details settings-details' },
     el('summary', { text: '设置字体、字重和段落间距' }),
     el(
       'div',
-      { class: 'stack' },
+      { class: 'details-content' },
       el(
         'div',
         { class: 'grid-two' },
@@ -781,97 +938,141 @@ function renderReading() {
       ),
     ),
   );
+  const hoverModifier = selectFor(settings, 'hoverModifier', [
+    ['Alt', 'Alt'],
+    ['Control', 'Ctrl'],
+    ['Shift', 'Shift'],
+  ]);
+  hoverModifier.disabled = !settings.hover;
+  const comparisonProfiles = settings.profiles.filter(
+    (profile) => profile.enabled && profile.capabilities.text,
+  );
   main.replaceChildren(
-    header('阅读与交互', '整段原文在上，完整译文在下。按阅读习惯选择样式和字体。'),
+    header('阅读与交互', '调整语言、译文外观和操作方式，找到舒服的阅读节奏。'),
     el(
       'div',
-      { class: 'stack' },
-      el(
-        'div',
-        { class: 'grid-three' },
-        field('源语言', selectFor(settings, 'sourceLanguage', LANGUAGES)),
-        field(
-          '目标语言',
-          selectFor(
-            settings,
-            'targetLanguage',
-            LANGUAGES.filter(([id]) => id !== 'auto'),
+      { class: 'settings-sections' },
+      group(
+        '语言偏好',
+        '网页阅读与输入翻译可以使用不同的目标语言。',
+        el(
+          'div',
+          { class: 'grid-three' },
+          field('源语言', selectFor(settings, 'sourceLanguage', LANGUAGES)),
+          field(
+            '目标语言',
+            selectFor(
+              settings,
+              'targetLanguage',
+              LANGUAGES.filter(([id]) => id !== 'auto'),
+            ),
+          ),
+          field(
+            '输入框目标语言',
+            selectFor(
+              settings,
+              'inputTargetLanguage',
+              LANGUAGES.filter(([id]) => id !== 'auto'),
+            ),
           ),
         ),
-        field(
-          '输入框目标语言',
-          selectFor(
-            settings,
-            'inputTargetLanguage',
-            LANGUAGES.filter(([id]) => id !== 'auto'),
-          ),
+        check(
+          '繁体中文转简体后替换原文',
+          settings,
+          'replaceTraditionalChinese',
+          undefined,
+          '目标为简体中文时生效。繁体段落在本地转换并替换，保留链接与格式，可恢复原文；简体段落自动跳过。关闭后，繁体按默认阅读模式翻译。',
         ),
       ),
-      el(
-        'div',
-        { class: 'grid-three' },
-        field('界面主题', theme),
-        field('默认阅读模式', mode),
-        field('译文样式', styles),
+      group(
+        '译文外观',
+        '修改后立即预览，保存后应用到网页。',
+        el(
+          'div',
+          { class: 'grid-three' },
+          field('界面主题', theme),
+          field('默认阅读模式', mode),
+          field('译文样式', styles),
+        ),
+        el(
+          'div',
+          { class: 'preview-frame' },
+          el('span', { class: 'preview-label', text: '阅读效果' }),
+          preview,
+        ),
+        el(
+          'div',
+          { class: 'grid-two' },
+          field('译文字号比例', el('div', { class: 'compact-stack' }, size, sizeValue)),
+          field('译文颜色，留空跟随网页', color),
+        ),
+        fontSettings,
+        el(
+          'details',
+          { class: 'reading-details settings-details' },
+          el('summary', { text: '预览全部译文样式' }),
+          el('div', { class: 'details-content' }, gallery),
+        ),
       ),
-      preview,
-      el(
-        'div',
-        { class: 'grid-two' },
-        field('译文字号比例', el('div', { class: 'compact-stack' }, size, sizeValue)),
-        field('译文颜色，留空跟随网页', color),
+      group(
+        '翻译与交互',
+        '设置翻译范围，以及页面上显示的操作入口。',
+        check(
+          '按可见范围逐段翻译',
+          settings,
+          'lazy',
+          undefined,
+          '只翻译当前阅读范围，向下滚动时继续翻译。',
+        ),
+        check(
+          '翻译页面标题',
+          settings,
+          'translateTitle',
+          undefined,
+          '同时翻译浏览器标签页中的页面标题。',
+        ),
+        check(
+          '显示页面浮动按钮',
+          settings,
+          'floatingButton',
+          undefined,
+          '浮动 O 按钮可拖动，贴边后自动收起；悬停可打开页内设置。',
+        ),
+        check('显示划词翻译按钮', settings, 'selection', undefined, '选中文字后显示翻译入口。'),
+        check(
+          '启用修饰键悬停翻译',
+          settings,
+          'hover',
+          () => {
+            hoverModifier.disabled = !settings.hover;
+          },
+          '按住下方修饰键，将鼠标移到文字上即可翻译。',
+        ),
+        el('div', { class: 'dependent-setting' }, field('悬停修饰键', hoverModifier)),
+        el(
+          'div',
+          { class: 'shortcut-list', 'aria-label': '翻译快捷键' },
+          ...[
+            ['Alt+A', '双语'],
+            ['Alt+W', '整页'],
+            ['Alt+I', '输入框'],
+            ['Alt+S', '工作台'],
+          ].map(([key, label]) => el('span', {}, el('kbd', { text: key }), label)),
+        ),
+        el('p', { class: 'hint', text: '快捷键可在 Edge 扩展快捷键页调整。' }),
       ),
-      fontSettings,
       aiLayoutSettings(),
-      el(
-        'div',
-        { class: 'compact-stack' },
-        check('繁体中文转简体后替换原文', settings, 'replaceTraditionalChinese'),
-        el('p', {
-          class: 'hint',
-          text: '目标语言为简体中文时生效。已是简体中文的段落自动跳过；开启后，繁体段落在本地转为简体并直接替换，保留链接与格式，可恢复原文。关闭时繁体仍按默认阅读模式翻译。',
-        }),
-      ),
-      el(
-        'details',
-        { class: 'reading-details' },
-        el('summary', { text: '预览全部译文样式' }),
-        gallery,
-      ),
-      el(
-        'div',
-        { class: 'grid-two' },
-        check('按可见范围逐段翻译', settings, 'lazy'),
-        check('翻译页面标题', settings, 'translateTitle'),
-        check('显示页面浮动按钮', settings, 'floatingButton'),
-        check('显示划词翻译按钮', settings, 'selection'),
-        check('启用修饰键悬停翻译', settings, 'hover'),
-        field(
-          '悬停修饰键',
-          selectFor(settings, 'hoverModifier', [
-            ['Alt', 'Alt'],
-            ['Control', 'Ctrl'],
-            ['Shift', 'Shift'],
-          ]),
-        ),
-      ),
-      el('div', {
-        class: 'notice',
-        text: '浮动 O 按钮可拖动，贴近左右边缘后自动收起。悬停可显示下方设置入口，直接切换服务与阅读样式。',
-      }),
-      el('div', {
-        class: 'hint',
-        text: '快捷键 Alt+A 双语、Alt+W 整页、Alt+I 输入框、Alt+S 工作台。可在 Edge 扩展快捷键页调整。',
-      }),
-      el('h3', { text: '划词对照服务' }),
-      el(
-        'div',
-        { class: 'row' },
-        ...settings.profiles
-          .filter((profile) => profile.enabled && profile.capabilities.text)
-          .map((profile) => {
+      group(
+        '划词对照服务',
+        '划词翻译时，同时查看所选服务的译文。',
+        el(
+          'div',
+          { class: 'choice-set comparison-services' },
+          ...comparisonProfiles.map((profile) => {
             const input = el('input', {
               type: 'checkbox',
+              name: 'comparison-' + profile.id,
+              'aria-label': profile.name,
               checked: settings.comparisonProfiles.includes(profile.id),
             });
             input.onchange = () => {
@@ -880,7 +1081,18 @@ function renderReading() {
                 : settings.comparisonProfiles.filter((id) => id !== profile.id);
               dirty();
             };
-            return el('label', { class: 'check' }, input, profile.name);
+            return el(
+              'label',
+              { class: 'check', title: profile.name },
+              input,
+              el('span', { text: profile.name }),
+            );
+          }),
+        ),
+        !comparisonProfiles.length &&
+          el('p', {
+            class: 'hint',
+            text: '先在“服务与模型”中添加并启用文本服务，再选择对照服务。',
           }),
       ),
     ),
@@ -890,52 +1102,73 @@ function renderReading() {
 
 function renderMedia() {
   main.replaceChildren(
-    header('图片与字幕', '图片优先交给你选择的视觉模型，字幕与语音按场景分别配置。'),
+    header('图片与字幕', '分别调整图片处理、视频字幕和实时语音的显示方式。'),
     el(
       'div',
-      { class: 'stack' },
-      el(
-        'div',
-        { class: 'grid-two' },
-        field('图片最长输入边', numberFor(settings, 'imageMaxEdge', 600, 4096)),
-        field('长图分片高度', numberFor(settings, 'imageTileHeight', 600, 4096)),
-        field('批量图片并发', numberFor(settings, 'imageConcurrency', 1, 5)),
-        field(
-          '图片文字绘制',
-          selectFor(settings, 'imageRender', [
-            ['cover', '采样底色覆盖'],
-            ['overlay', '半透明底色覆盖'],
-          ]),
+      { class: 'settings-sections' },
+      group(
+        '图片翻译',
+        '控制输入尺寸、处理速度与译文绘制效果。',
+        el(
+          'div',
+          { class: 'grid-two' },
+          field('图片最长输入边', numberFor(settings, 'imageMaxEdge', 600, 4096)),
+          field('长图分片高度', numberFor(settings, 'imageTileHeight', 600, 4096)),
+          field('批量图片并发', numberFor(settings, 'imageConcurrency', 1, 5)),
+          field(
+            '图片文字绘制',
+            selectFor(settings, 'imageRender', [
+              ['cover', '采样底色覆盖'],
+              ['overlay', '半透明底色覆盖'],
+            ]),
+          ),
+          field('图片译文字体', inputFor(settings, 'imageFont')),
         ),
-        field('图片译文字体', inputFor(settings, 'imageFont')),
+        el('p', {
+          class: 'hint',
+          text: '图片输出根据模型返回的区域坐标覆盖译文。复杂纹理去字、竖排与漫画气泡效果需要按实际模型验证。',
+        }),
+      ),
+      group(
+        '视频字幕',
+        '调整已有字幕的翻译与显示。',
         field('字幕字号', numberFor(settings, 'subtitleFontSize', 12, 48)),
+        check(
+          '提前翻译未来 90 秒字幕',
+          settings,
+          'subtitlePretranslate',
+          undefined,
+          '提前处理字幕轨道中后续 90 秒的内容，减少播放时的等待。',
+        ),
+        field(
+          '网站字幕 CSS 选择器，选填',
+          inputFor(settings, 'subtitleSelector'),
+          '用于网站已有的可见字幕，例如会议平台。留空使用随包适配和字幕轨道。',
+        ),
       ),
-      el('p', {
-        class: 'hint',
-        text: '图片输出根据模型返回的区域坐标覆盖译文。复杂纹理去字、竖排与漫画气泡效果需要按实际模型验证。',
-      }),
-      check('提前翻译未来 90 秒字幕', settings, 'subtitlePretranslate'),
-      field(
-        '网站字幕 CSS 选择器，选填',
-        inputFor(settings, 'subtitleSelector'),
-        '用于网站已有的可见字幕，例如会议平台。留空使用随包适配和字幕轨道。',
+      group(
+        '实时语音',
+        '识别页面音频，再使用字幕服务翻译。',
+        field(
+          '实时语音识别片段长度，秒',
+          numberFor(settings, 'asrChunkSeconds', 5, 60),
+          '较短片段可减少等待，较长片段可以提供更多上下文。',
+        ),
+        el('div', {
+          class: 'notice',
+          text: '网页右键可以启动页面音频识别。浏览器会显示音频捕获状态。识别使用你配置的语音服务，文本翻译使用字幕服务。',
+        }),
       ),
-      field(
-        '实时语音识别片段长度，秒',
-        numberFor(settings, 'asrChunkSeconds', 5, 60),
-        '较短片段可减少等待，较长片段可以提供更多上下文。',
-      ),
-      el('div', {
-        class: 'notice',
-        text: '网页右键可以启动页面音频识别。浏览器会显示音频捕获状态。识别使用你配置的语音服务，文本翻译使用字幕服务。',
-      }),
     ),
   );
 }
 function renderRules() {
   const terms = el('textarea', {
     rows: 9,
-    placeholder: '源术语<Tab>目标译法<Tab>域名，域名可留空',
+    name: 'glossary',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    placeholder: '例如 API<Tab>接口<Tab>example.com…',
   });
   terms.value = settings.glossary
     .map((term) => [term.source, term.target, term.domain || ''].join('\t'))
@@ -950,7 +1183,7 @@ function renderRules() {
       });
     dirty();
   };
-  const prompt = el('textarea', { rows: 5 });
+  const prompt = el('textarea', { rows: 5, name: 'global-prompt', autocomplete: 'off' });
   prompt.value = settings.prompt;
   prompt.oninput = () => {
     settings.prompt = prompt.value;
@@ -960,27 +1193,46 @@ function renderRules() {
     header('站点与术语', '自动翻译规则、术语和补充指令保存在本地，按你的阅读习惯调整。'),
     el(
       'div',
-      { class: 'stack' },
-      el(
-        'div',
-        { class: 'grid-two' },
-        linesField('总是翻译的网站', 'autoSites', '每行一个域名或 URL 通配模式。'),
-        linesField('不翻译的网站', 'blockSites', '排除规则优先于自动翻译。'),
+      { class: 'settings-sections' },
+      group(
+        '网站翻译规则',
+        '按网站决定是否自动翻译，排除规则优先。',
+        el(
+          'div',
+          { class: 'grid-two' },
+          linesField('总是翻译的网站', 'autoSites', '每行一个域名或 URL 通配模式。'),
+          linesField('不翻译的网站', 'blockSites', '排除规则优先于自动翻译。'),
+        ),
       ),
-      field('术语表', terms, '每行一条，字段之间用 Tab 分隔。可限定生效域名。'),
-      field('全局补充翻译指令', prompt),
-      jsonField(
-        '自定义站点提取规则',
-        settings,
-        'siteRules',
-        'global',
-        '数组项支持 matches、selectors 和 excludeSelectors。',
+      group(
+        '术语与翻译指令',
+        '统一专有名词的译法，并补充你的翻译要求。',
+        field('术语表', terms, '每行一条，字段之间用 Tab 分隔。可限定生效域名。'),
+        field('全局补充翻译指令', prompt),
       ),
-      check('发送模型前遮蔽邮箱和长数字', settings, 'maskPrivacy'),
-      linesField(
-        '额外遮蔽表达式',
-        'privacyPatterns',
-        '每行一个正则表达式。译文返回后恢复对应内容。',
+      group(
+        '隐私遮蔽',
+        '在内容发送给模型前替换敏感片段，译文返回后恢复。',
+        check('发送模型前遮蔽邮箱和长数字', settings, 'maskPrivacy'),
+        linesField(
+          '额外遮蔽表达式',
+          'privacyPatterns',
+          '每行一个正则表达式。译文返回后恢复对应内容。',
+        ),
+      ),
+      group(
+        '高级站点适配',
+        '仅在需要调整网页内容提取范围时修改。',
+        disclosure(
+          '编辑自定义站点提取规则',
+          jsonField(
+            '自定义站点提取规则',
+            settings,
+            'siteRules',
+            'global',
+            '数组项支持 matches、selectors 和 excludeSelectors。',
+          ),
+        ),
       ),
     ),
   );
@@ -988,12 +1240,18 @@ function renderRules() {
 async function renderData() {
   const output = el('pre', {
     class: 'code-output',
+    tabindex: '0',
+    'aria-label': '诊断记录内容',
     text: '读取诊断后可按页面筛选，记录包含请求、切换、提醒和扫描统计。',
   });
-  const localStatus = el('div', { class: 'status', role: 'status' });
+  const localStatus = el('div', {
+    class: 'status data-status',
+    role: 'status',
+    'aria-live': 'polite',
+  });
   const logPage = el(
     'select',
-    { 'aria-label': '诊断页面' },
+    { name: 'diagnostic-page', 'aria-label': '诊断页面' },
     el('option', { value: '' }, '全部页面'),
   );
   let diagnosticRecords = [];
@@ -1019,8 +1277,17 @@ async function renderData() {
     output.textContent = JSON.stringify(selectedLogs(), null, 2);
     status(localStatus, `显示 ${selectedLogs().length} 条，已保存 ${diagnosticRecords.length} 条`);
   };
-  const secrets = el('input', { type: 'checkbox' });
-  const file = el('input', { type: 'file', accept: '.json,application/json' });
+  const secrets = el('input', {
+    type: 'checkbox',
+    name: 'include-secrets',
+    'aria-label': '导出配置时包含密钥',
+    'aria-describedby': 'export-secrets-hint',
+  });
+  const file = el('input', {
+    type: 'file',
+    name: 'import-settings',
+    accept: '.json,application/json',
+  });
   file.onchange = async () => {
     try {
       if (!file.files[0]) return;
@@ -1029,8 +1296,10 @@ async function renderData() {
       selected = settings.profiles[0]?.id;
       invalid.clear();
       jsonDrafts.clear();
+      hasChanges = false;
       applyTheme(settings);
-      status(localStatus, '配置已导入并保存');
+      render();
+      status(notice, '配置已导入并保存');
     } catch (error) {
       status(localStatus, error.message, true);
     }
@@ -1039,127 +1308,157 @@ async function renderData() {
     header('数据与诊断', '随时带走配置、清理缓存，按操作记录定位接口问题。'),
     el(
       'div',
-      { class: 'stack' },
-      el(
-        'div',
-        { class: 'grid-three' },
-        check('启用本地翻译缓存', settings, 'cache'),
-        field('缓存有效天数，0 为持续保留', numberFor(settings, 'cacheDays', 0, 365)),
-        field('缓存条目上限', numberFor(settings, 'cacheEntries', 100, 50000)),
-        field('总体请求并发', numberFor(settings, 'maxConcurrent', 1, 12)),
-      ),
-      el(
-        'div',
-        { class: 'button-row' },
-        el('button', {
-          text: '查看缓存数量',
-          onclick: async () => {
-            try {
-              status(localStatus, `缓存 ${(await rpc('cache-stats')).entries} 条`);
-            } catch (error) {
-              status(localStatus, error.message, true);
-            }
-          },
-        }),
-        el('button', {
-          text: '清空翻译缓存',
-          onclick: async () => {
-            try {
-              await rpc('clear-cache');
-              status(localStatus, '缓存已清空');
-            } catch (error) {
-              status(localStatus, error.message, true);
-            }
-          },
-        }),
-      ),
-      el('hr', { class: 'divider' }),
-      el('label', { class: 'check' }, secrets, '导出配置时包含密钥'),
-      el('button', {
-        text: '导出配置',
-        onclick: async () => {
-          try {
-            if (!(await save())) return;
-            const data = await rpc('export-settings', { includeSecrets: secrets.checked });
-            textFile(JSON.stringify(data, null, 2), 'O泡翻译-配置.json', 'application/json');
-          } catch (error) {
-            status(localStatus, error.message, true);
-          }
-        },
-      }),
-      field(
-        '导入本项目或旧扩展 JSON 配置',
-        file,
-        '默认导出隐藏密钥，导入此类文件时保留同 ID 服务的现有凭据。旧版加密密钥需要重新填写。',
-      ),
+      { class: 'settings-sections' },
       localStatus,
-      el('hr', { class: 'divider' }),
-      el('h3', { text: '运行日志' }),
-      el('p', {
-        class: 'hint',
-        text: '日志保存在扩展本地，最多1000条、保留7天。自动记录服务ID、耗时、错误状态、切换和扫描原因统计。页面用站点和文档编号区分，正文、密钥、请求头及完整网址不写入日志。',
-      }),
-      field('诊断页面', logPage),
-      el(
-        'div',
-        { class: 'button-row' },
-        el('button', {
-          text: '读取诊断记录',
-          onclick: async () => {
-            try {
-              await readLogs();
-            } catch (error) {
-              output.textContent = error.message;
-            }
-          },
-        }),
-        el('button', {
-          text: '导出诊断',
-          onclick: async () => {
-            try {
-              await readLogs();
-              textFile(
-                JSON.stringify(
-                  {
-                    version: chrome.runtime.getManifest().version,
-                    exportedAt: new Date().toISOString(),
-                    page: logPage.value,
-                    entries: selectedLogs(),
-                  },
-                  null,
-                  2,
-                ),
-                'O泡翻译-诊断.json',
-                'application/json',
-              );
-            } catch (error) {
-              status(localStatus, error.message, true);
-            }
-          },
-        }),
-        el('button', {
-          text: '清空全部诊断',
-          onclick: async () => {
-            try {
-              await rpc('clear-logs');
-              await readLogs();
-              status(localStatus, '诊断记录已清空');
-            } catch (error) {
-              status(localStatus, error.message, true);
-            }
-          },
-        }),
+      group(
+        '翻译缓存与并发',
+        '复用已有译文，并控制扩展同时发出的请求数。',
+        check(
+          '启用本地翻译缓存',
+          settings,
+          'cache',
+          undefined,
+          '相同内容优先使用本机保存的译文，减少重复请求。',
+        ),
+        el(
+          'div',
+          { class: 'grid-three' },
+          field('缓存有效天数，0 为持续保留', numberFor(settings, 'cacheDays', 0, 365)),
+          field('缓存条目上限', numberFor(settings, 'cacheEntries', 100, 50000)),
+          field('总体请求并发', numberFor(settings, 'maxConcurrent', 1, 12)),
+        ),
+        el(
+          'div',
+          { class: 'button-row' },
+          el('button', {
+            text: '查看缓存数量',
+            onclick: async () => {
+              try {
+                status(localStatus, `缓存 ${(await rpc('cache-stats')).entries} 条`);
+              } catch (error) {
+                status(localStatus, error.message, true);
+              }
+            },
+          }),
+          el('button', {
+            text: '清空翻译缓存',
+            onclick: async () => {
+              if (!confirm('清空全部翻译缓存？之后遇到相同内容会重新请求翻译。')) return;
+              try {
+                await rpc('clear-cache');
+                status(localStatus, '缓存已清空');
+              } catch (error) {
+                status(localStatus, error.message, true);
+              }
+            },
+          }),
+        ),
       ),
-      output,
+      group(
+        '配置备份与迁移',
+        '导出配置备份，或从本项目和旧扩展导入 JSON。',
+        el(
+          'label',
+          { class: 'check' },
+          el(
+            'span',
+            { class: 'check-copy' },
+            el('span', { text: '导出配置时包含密钥' }),
+            el('span', {
+              class: 'hint',
+              id: 'export-secrets-hint',
+              text: '默认隐藏密钥。包含密钥的配置文件请妥善保管。',
+            }),
+          ),
+          secrets,
+        ),
+        el('button', {
+          text: '导出配置',
+          onclick: async () => {
+            try {
+              if (!(await save())) return;
+              const data = await rpc('export-settings', { includeSecrets: secrets.checked });
+              textFile(JSON.stringify(data, null, 2), 'O泡翻译-配置.json', 'application/json');
+            } catch (error) {
+              status(notice, error.message, true);
+            }
+          },
+        }),
+        field(
+          '导入本项目或旧扩展 JSON 配置',
+          file,
+          '默认导出隐藏密钥，导入此类文件时保留同 ID 服务的现有凭据。旧版加密密钥需要重新填写。',
+        ),
+      ),
+      group(
+        '运行日志',
+        '读取本地记录，按页面定位接口和翻译问题。',
+        el('p', {
+          class: 'hint',
+          text: '日志保存在扩展本地，最多1000条、保留7天。自动记录服务ID、耗时、错误状态、切换和扫描原因统计。页面用站点和文档编号区分，正文、密钥、请求头及完整网址不写入日志。',
+        }),
+        field('诊断页面', logPage),
+        el(
+          'div',
+          { class: 'button-row' },
+          el('button', {
+            text: '读取诊断记录',
+            onclick: async () => {
+              try {
+                await readLogs();
+              } catch (error) {
+                output.textContent = error.message;
+              }
+            },
+          }),
+          el('button', {
+            text: '导出诊断',
+            onclick: async () => {
+              try {
+                await readLogs();
+                textFile(
+                  JSON.stringify(
+                    {
+                      version: chrome.runtime.getManifest().version,
+                      exportedAt: new Date().toISOString(),
+                      page: logPage.value,
+                      entries: selectedLogs(),
+                    },
+                    null,
+                    2,
+                  ),
+                  'O泡翻译-诊断.json',
+                  'application/json',
+                );
+              } catch (error) {
+                status(localStatus, error.message, true);
+              }
+            },
+          }),
+          el('button', {
+            text: '清空全部诊断',
+            onclick: async () => {
+              if (!confirm('清空全部诊断记录？此操作无法撤销。')) return;
+              try {
+                await rpc('clear-logs');
+                await readLogs();
+                status(localStatus, '诊断记录已清空');
+              } catch (error) {
+                status(localStatus, error.message, true);
+              }
+            },
+          }),
+        ),
+        output,
+      ),
     ),
   );
 }
 function render() {
-  for (const button of nav.querySelectorAll('button'))
-    button.setAttribute(
-      'aria-current',
-      button.dataset.section === currentSection ? 'page' : 'false',
-    );
+  main.dataset.section = currentSection;
+  document.title = sections.find(([id]) => id === currentSection)[1] + ' · O泡翻译';
+  for (const link of nav.querySelectorAll('[data-section]'))
+    link.setAttribute('aria-current', link.dataset.section === currentSection ? 'page' : 'false');
   ({
     services: renderServices,
     reading: renderReading,
@@ -1172,58 +1471,76 @@ async function initialize() {
   settings = await rpc('get-settings');
   selected = settings.profiles[0]?.id;
   applyTheme(settings);
+  const selectSection = () => {
+    const hash = location.hash.slice(1);
+    currentSection = sections.some(([id]) => id === hash) ? hash : 'services';
+    render();
+  };
+  window.addEventListener('hashchange', () => {
+    selectSection();
+    window.scrollTo(0, 0);
+    main.querySelector('h1').focus({ preventScroll: true });
+  });
+  window.addEventListener('beforeunload', (event) => {
+    if (hasChanges) {
+      event.preventDefault();
+      event.returnValue = '';
+    }
+  });
+  systemTheme.addEventListener('change', () => applyTheme(settings));
   nav.append(
-    ...[
-      ['services', '服务与模型'],
-      ['reading', '阅读与交互'],
-      ['media', '图片与字幕'],
-      ['rules', '站点与术语'],
-      ['data', '数据与诊断'],
-    ].map(([section, label]) =>
-      el('button', {
+    el('p', { class: 'nav-caption', text: '设置' }),
+    ...sections.map(([section, label]) =>
+      el('a', {
         'data-section': section,
-        onclick: () => {
-          currentSection = section;
-          render();
-        },
+        href: '#' + section,
         text: label,
       }),
     ),
     el('p', {
-      class: 'hint',
-      text: 'O泡翻译\n个人自用版本 ' + chrome.runtime.getManifest().version,
+      class: 'sidebar-footer hint',
+      text: 'O泡翻译 ' + chrome.runtime.getManifest().version + '\n配置保存在本机',
     }),
   );
   root.append(
+    el('a', {
+      class: 'skip-link',
+      href: '#settings-main',
+      text: '跳到设置内容',
+      onclick: (event) => {
+        event.preventDefault();
+        main.focus();
+      },
+    }),
     el(
       'header',
       { class: 'app-header' },
       el(
         'a',
         { class: 'brand', href: 'settings.html' },
-        el('img', { src: 'logo.svg', alt: '' }),
+        el('img', { src: 'logo.svg', alt: '', width: 42, height: 42 }),
         el(
           'div',
           {},
-          el('div', { class: 'brand-name', text: 'O泡翻译' }),
-          el('small', { text: '个人翻译设置' }),
+          el('div', { class: 'brand-name', text: 'O泡翻译', translate: 'no' }),
+          el('small', { text: '翻译偏好，按你的习惯' }),
         ),
       ),
       el(
         'div',
-        { class: 'compact-stack' },
+        { class: 'header-actions' },
+        notice,
         el(
           'div',
           { class: 'row' },
           el('button', { text: '打开工作台', onclick: () => rpc('open-workspace') }),
           el('button', { class: 'primary', text: '保存设置', id: 'save-settings', onclick: save }),
         ),
-        notice,
       ),
     ),
     el('div', { class: 'settings-layout' }, nav, main),
   );
-  render();
+  selectSection();
 }
 initialize().catch((error) =>
   root.replaceChildren(el('div', { class: 'empty', text: error.message })),
