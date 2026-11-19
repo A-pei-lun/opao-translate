@@ -204,9 +204,7 @@ function translationSystem(settings, profile, payload) {
 }
 async function translate(settings, payload, signal, emit) {
   const profile = resolveProfile(settings, payload.role, payload.profileId);
-  const progressive = payload.progressive === true;
-  const streamProfile = progressive && ['chat', 'responses', 'claude', 'gemini'].includes(profile.protocol)
-    ? { ...profile, stream:true } : profile;
+  const progressive = payload.progressive === true && profile.stream;
   let sequence = 0;
   const publish = (record) => {
     if (!progressive || signal.aborted) return;
@@ -331,7 +329,7 @@ async function translate(settings, payload, signal, emit) {
             try {
             if (TRADITIONAL_PROTOCOLS.includes(profile.protocol))
               translated = await traditionalTranslate(
-                streamProfile,
+                profile,
                 source,
                 payload.sourceLanguage || settings.sourceLanguage,
                 payload.targetLanguage || settings.targetLanguage,
@@ -339,7 +337,7 @@ async function translate(settings, payload, signal, emit) {
               );
             else {
               const text = await generate(
-                streamProfile,
+                profile,
                 {
                   system: translationSystem(settings, profile, payload),
                   prompt: JSON.stringify({
