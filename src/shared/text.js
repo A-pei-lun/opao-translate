@@ -58,25 +58,111 @@ export function joinTranslatedParts(parts, language) {
     return result + separator + part;
   }, '');
 }
-export function parseTranslations(text, items) {
-  const parsed = parseJsonText(text);
-  const results = Array.isArray(parsed)
-    ? parsed
-    : parsed.translations || parsed.items || parsed.results;
-  if (!Array.isArray(results)) throw new Error('模型响应需要包含 translations 数组');
+const translationText = (item) => item?.text ?? item?.translation ?? item?.translated;
+const translationId = (id) => (typeof id === 'string' || typeof id === 'number' ? String(id) : '');
+function normalizeTranslationId(id) {
+  const normalized = id.trim()
+    .replace(/[\uFF10-\uFF19]/g, (digit) => digit.normalize('NFKC'))
+    .replace(/[\u2010-\u2015\u2212\uFF0D]/g, '-')
+    .replace(/\s*-\s*/g, '-');
+  return /^\d+-\d+$/.test(normalized) ? normalized : id.trim();
+}
+
+export function validateTranslationItems(results, items, allowAnonymous = false) {
+  const translations = [];
+  const failures = [];
+  const actualIds = [];
+  const issues = new Set();
+  const expected = new Set(items.map((item) => String(item.id)));
+  const aliases = new Map();
   const byId = new Map();
-  for (const item of results) {
-    if (!item || typeof item !== 'object') continue;
-    const value = item.text ?? item.translation ?? item.translated;
-    if (typeof value === 'string') byId.set(String(item.id), value);
+  for (const id of expected) {
+    const alias = normalizeTranslationId(id);
+    aliases.set(alias, aliases.has(alias) ? null : id);
   }
-  return items.map((item) => {
-    if (!byId.has(String(item.id)))
-      throw new Error(`模型漏掉了段落 ${item.id}，请减小批量大小后重试`);
-    if (item.text.trim() && !byId.get(String(item.id)).trim())
-      throw new Error(`模型为段落 ${item.id} 返回了空译文，请重试`);
-    return { id: String(item.id), text: byId.get(String(item.id)) };
-  });
+  if (!Array.isArray(results)) issues.add('invalid-format');
+  for (const item of Array.isArray(results) ? results : []) {
+    const object = item && typeof item === 'object' && !Array.isArray(item);
+    const explicit = object && Object.hasOwn(item, 'id');
+    const rawId = explicit ? translationId(item.id) : '';
+    const text = typeof item === 'string' ? item : translationText(item);
+    if (explicit) actualIds.push(rawId);
+    let id = expected.has(rawId) ? rawId : aliases.get(normalizeTranslationId(rawId));
+    if (!explicit) {
+      issues.add('missing-id');
+      if (allowAnonymous && items.length === 1 && results.length === 1)
+        id = String(items[0].id);
+    } else if (!id) issues.add(rawId ? 'unknown-id' : 'invalid-id');
+    else if (id !== rawId) issues.add('normalized-id');
+    if (!id) continue;
+    const candidates = byId.get(id) || [];
+    candidates.push(text);
+    byId.set(id, candidates);
+  }
+  for (const item of items) {
+    const id = String(item.id);
+    const candidates = byId.get(id);
+    const text = candidates?.[0];
+    let reason;
+    if (!candidates) reason = issues.has('invalid-format') ? 'invalid-format' : 'missing-id';
+    else if (candidates.length > 1) reason = 'duplicate-id';
+    else if (typeof text !== 'string') reason = 'invalid-translation';
+    else if (item.text.trim() && !text.trim()) reason = 'empty-translation';
+    else {
+      try {
+        validateTokens(item.text, text);
+      } catch {
+        reason = 'invalid-placeholders';
+      }
+    }
+    if (reason) {
+      issues.add(reason);
+      failures.push({ id, reason });
+    } else translations.push({ id, text });
+  }
+  return { translations, failures, actualIds, issues: [...issues] };
+}
+
+function containsTranslationId(value) {
+  return /(?:^|[\n\r>])\s*[\d\uFF10-\uFF19]+\s*[-\u2010-\u2015\u2212\uFF0D]\s*[\d\uFF10-\uFF19]+\s*[:.=\uFF1A]|["']?\bid["']?\s*[:=\uFF1A]|<\s*\/?\s*id\b/i.test(value);
+}
+
+function countIdFields(value, limit = 2) {
+  let count = 0;
+  const pending = [value];
+  while (pending.length && count < limit) {
+    const item = pending.pop();
+    if (!item || typeof item !== 'object') continue;
+    if (Object.hasOwn(item, 'id')) count++;
+    for (const child of Object.values(item)) if (child && typeof child === 'object') pending.push(child);
+  }
+  return count;
+}
+
+export function parseTranslations(text, items) {
+  let parsed;
+  try {
+    parsed = parseJsonText(text);
+  } catch {
+    if (items.length === 1) {
+      const bare = text.trim()
+        .replace(/^\x60{3}(?:text|txt)?[ \t]*\r?\n([\s\S]+)\r?\n\x60{3}$/, '$1')
+        .replace(/^<(text|translation)>([\s\S]+)<\/\1>$/i, '$2').trim();
+      if (!/^(?:[\["\x60<]|\{(?!\{OPAO))/u.test(bare) && !containsTranslationId(bare)) parsed = bare;
+    }
+  }
+  let results = Array.isArray(parsed) ? parsed :
+    parsed?.translations ?? parsed?.items ?? parsed?.results;
+  if (items.length === 1 && results === undefined &&
+      (typeof parsed === 'string' || typeof translationText(parsed) === 'string'))
+    results = [parsed];
+  let allowAnonymous = false;
+  if (items.length === 1 && Array.isArray(results) && results.length === 1) {
+    const item = results[0];
+    const value = typeof item === 'string' ? item : translationText(item);
+    allowAnonymous = typeof value === 'string' && !containsTranslationId(text) && countIdFields(parsed) === 0;
+  }
+  return validateTranslationItems(results, items, allowAnonymous);
 }
 export function maskText(text, enabled, patterns = []) {
   const replacements = [];

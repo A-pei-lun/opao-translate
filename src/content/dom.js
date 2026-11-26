@@ -313,7 +313,8 @@ export class PageTranslator {
     return result;
   }
   updateStyle(record) {
-    const replace = this.settings.mode === 'translation' || record.layoutMode === 'replace';
+    const interrupted = record.state === 'interrupted';
+    const replace = !interrupted && (this.settings.mode === 'translation' || record.layoutMode === 'replace');
     if (replace) {
       if (!record.source) {
         record.source = document.createElement('span');
@@ -330,6 +331,10 @@ export class PageTranslator {
       record.source = null;
     }
     applyTranslationAppearance(record.target, this.settings);
+    if (interrupted) {
+      record.target.style.setProperty('display', 'none', 'important');
+      return;
+    }
     this.updateLayout(record);
     if (record.translation !== undefined && record.state === 'done')
       record.target.replaceChildren(record.rich.render(record.translation, { omitIcons: !replace }));
@@ -516,9 +521,14 @@ export class PageTranslator {
     }
   }
   enqueue(record) {
-    if (!['new', 'error'].includes(record.state)) return;
+    if (!['new', 'error', 'interrupted'].includes(record.state)) return;
+    const interrupted = record.state === 'interrupted';
     record.state = 'queued';
     record.view.reset();
+    if (interrupted) {
+      record.target.style.removeProperty('display');
+      this.updateStyle(record);
+    }
     this.queue.push(record);
     if (!this.pumpTimer)
       this.pumpTimer = setTimeout(() => { this.pumpTimer = null; this.pump(); }, 0);
@@ -537,6 +547,7 @@ export class PageTranslator {
       );
     const id = jobId();
     this.jobs.add(id);
+    const byId = new Map(records.map((record) => [record.id, record]));
     const valid = (record) => generation === this.generation &&
       this.records.get(record.element) === record && record.target.isConnected &&
       sourceText(record.element) === record.original;
@@ -553,9 +564,23 @@ export class PageTranslator {
       })();
       return record.renderPromise;
     };
+    const showFailure = (record, message) => {
+      if (!record || !valid(record) || record.renderPromise) return;
+      record.view.reset();
+      record.state = 'error';
+      record.target.dataset.state = 'error';
+      record.target.textContent = message;
+      const retry = document.createElement('button');
+      retry.textContent = '重试';
+      retry.onclick = (event) => {
+        event.preventDefault();
+        this.enqueue(record);
+      };
+      record.target.append(retry);
+    };
     try {
       if (!records.length) return;
-      const translations = await translateItems(
+      const { translations, failures } = await translateItems(
         records.map((record) => ({ id: record.id, text: record.rich.text })),
         {
           jobId: id,
@@ -564,24 +589,26 @@ export class PageTranslator {
           context: document.title,
           domain: location.hostname,
           progressive: true,
+          partial: true,
           onPreview: (event) => {
             if (generation !== this.generation) return;
             if (event.type === 'translation-reset') {
               for (const record of records)
                 if (valid(record) && !record.renderPromise) record.view.reset();
             } else if (event.type === 'translation-preview') {
-              const record = records.find((item) => item.id === event.itemId);
+              const record = byId.get(event.itemId);
               if (record && valid(record) && !record.renderPromise) record.view.show(event.text);
             } else if (event.type === 'translation-result') {
-              const record = records.find((item) => item.id === event.itemId);
+              const record = byId.get(event.itemId);
               if (record && valid(record)) finish(record, event.text);
             }
           },
         },
       );
       if (generation !== this.generation) return;
+      for (const failure of failures) showFailure(byId.get(failure.id), failure.message);
       await Promise.all(translations.map(async (translated) => {
-        const record = records.find((item) => item.id === translated.id);
+        const record = byId.get(translated.id);
         if (!record || !valid(record)) return;
         await finish(record, translated.text);
       }));
@@ -590,18 +617,10 @@ export class PageTranslator {
       for (const record of records) {
         if (!valid(record) || record.renderPromise) continue;
         record.view.reset();
-        record.state = 'error';
-        record.target.dataset.state = 'error';
-        record.target.textContent = error.message;
-        const retry = document.createElement('button');
-        retry.textContent = '重试';
-        retry.onclick = (event) => {
-          event.preventDefault();
-          this.enqueue(record);
-        };
-        record.target.append(retry);
+        record.state = 'interrupted';
+        this.updateStyle(record);
       }
-      this.notify(error.message);
+      if (error.code !== 'CANCELLED') this.notify(error.message);
     } finally {
       this.jobs.delete(id);
       this.busy = false;

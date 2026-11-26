@@ -1,6 +1,6 @@
 {
   "name": "opao-translate",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "private": true,
   "type": "module",
   "description": "O泡翻译个人自用 Edge 扩展",

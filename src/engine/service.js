@@ -2,9 +2,9 @@ import { resolveProfile, TRADITIONAL_PROTOCOLS } from '../shared/config.js';
 import { isTimeoutError } from '../shared/failover.js';
 import {
   parseTranslations,
+  validateTranslationItems,
   maskText,
   splitText,
-  validateTokens,
   joinTranslatedParts,
 } from '../shared/text.js';
 import {
@@ -18,6 +18,7 @@ import {
 import { cacheGet, cacheSet, trimCache, cacheStats, clearCache, digest } from './cache.js';
 import { TranslationStreamParser, previewText } from '../shared/streaming.js';
 import { layoutSystem, parseLayoutPlan, readLayoutRequest } from '../shared/layout.js';
+import { translationResponseExcerpt } from '../shared/diagnostics.js';
 
 const jobs = new Map();
 const queue = [];
@@ -96,6 +97,7 @@ function recordDiagnostic(entry) {
 }
 function errorCode(error) {
   if (error?.code === 'REQUEST_TIMEOUT') return 'REQUEST_TIMEOUT';
+  if (error?.code === 'TRANSLATION_VALIDATION') return error.code;
   if (error?.status) return 'HTTP_ERROR';
   if (error?.code === 'CANCELLED' || error?.message === '已取消') return 'CANCELLED';
   return 'REQUEST_FAILED';
@@ -108,6 +110,7 @@ async function attempt(
   work,
   stopOnTimeout = false,
   context = {},
+  usedRetries = 0,
 ) {
   context = {
     ...context,
@@ -117,7 +120,7 @@ async function attempt(
   const started = Date.now();
   const keys = keysOf(profile);
   let lastError;
-  for (let retry = 0; retry <= profile.retries; retry++) {
+  for (let retry = usedRetries; retry <= profile.retries; retry++) {
     recordDiagnostic({
       ...context,
       event: retry ? 'retry' : 'attempt',
@@ -132,7 +135,7 @@ async function attempt(
     const key = keys.length ? keys[next % keys.length] : '';
     keyIndices.set(profile.id, next + 1);
     try {
-      const result = await work(key);
+      const result = await work(key, retry);
       recordDiagnostic({
         ...context,
         event: 'attempt',
@@ -210,8 +213,23 @@ function translationSystem(settings, profile, payload) {
     .filter(Boolean)
     .join('\n\n');
 }
+
+function validationFailure(reason) {
+  const messages = {
+    'invalid-format': '模型返回的译文格式无效',
+    'missing-id': '模型未返回本段译文',
+    'duplicate-id': '模型为本段返回了重复的编号',
+    'invalid-translation': '模型返回的本段译文无效',
+    'empty-translation': '模型返回了空译文',
+    'invalid-placeholders': '模型改变了本段格式或隐私占位符',
+  };
+  return { code: 'TRANSLATION_VALIDATION', message: messages[reason] };
+}
+
 async function translate(settings, payload, signal, emit) {
   const profile = resolveProfile(settings, payload.role, payload.profileId);
+  const partial = payload.partial === true;
+  const targetLanguage = payload.targetLanguage || settings.targetLanguage;
   const progressive = payload.progressive === true && profile.stream;
   let sequence = 0;
   const publish = (record) => {
@@ -224,7 +242,7 @@ async function translate(settings, payload, signal, emit) {
         break;
       }
     }
-    const text = previewText(joinTranslatedParts(pieces, payload.targetLanguage || settings.targetLanguage));
+    const text = previewText(joinTranslatedParts(pieces, targetLanguage));
     if (record.lastPreview === text) return;
     record.lastPreview = text;
     if (record.streamed || !text)
@@ -234,11 +252,12 @@ async function translate(settings, payload, signal, emit) {
     throw new Error('单次翻译需要 1 到 300 个文本段落');
   const expanded = [];
   const output = [];
+  const paragraphText = (record) => joinTranslatedParts(record.pieces, targetLanguage);
   const publishResult = (record) => {
     if (!payload.progressive || signal.aborted || record.published || record.pieces.includes(null)) return;
     record.published = true;
     emit({ type: 'translation-result', sequence: ++sequence, itemId: record.id,
-      text: joinTranslatedParts(record.pieces, payload.targetLanguage || settings.targetLanguage) });
+      text: paragraphText(record) });
   };
   const cacheBase = JSON.stringify({
     algorithm: 'text-v2',
@@ -256,7 +275,7 @@ async function translate(settings, payload, signal, emit) {
       throw new Error('段落数据无效或过长，请先分段');
     const id = String(item.id ?? index);
     const chunks = splitText(item.text, profile.maxChars);
-    const record = { id, pieces: new Array(chunks.length).fill(null), previews:[] };
+    const record = { id, pieces: new Array(chunks.length).fill(null), previews: [] };
     output.push(record);
     for (const [partIndex, text] of chunks.entries()) {
       if (!text.trim()) {
@@ -285,12 +304,13 @@ async function translate(settings, payload, signal, emit) {
     }
   }
   const batches = [];
+  const batchSize = ['custom', 'libre'].includes(profile.protocol) ? 1 : profile.batchSize;
   let batch = [],
     size = 0;
   for (const item of expanded) {
     if (
       batch.length &&
-      (batch.length >= profile.batchSize || size + item.text.length > profile.maxChars)
+      (batch.length >= batchSize || size + item.text.length > profile.maxChars)
     ) {
       batches.push(batch);
       batch = [];
@@ -302,114 +322,153 @@ async function translate(settings, payload, signal, emit) {
   if (batch.length) batches.push(batch);
   for (const record of output) publishResult(record);
   let completed = 0;
-  await Promise.all(
-    batches.map((items) =>
-      schedule(profile, signal, () =>
-        attempt(
-          profile,
-          settings,
-          signal,
-          'translate',
-          async (key) => {
-            const source = items.map(({ id, text }) => ({ id, text }));
-            const parser = new TranslationStreamParser(source.map((item) => item.id));
-            const byId = new Map(items.map((item) => [item.id, item]));
-            const dirty = new Set();
-            let seen = 0, timer;
-            const flush = () => {
-              clearTimeout(timer);
-              timer = null;
-              for (const record of dirty) publish(record);
-              dirty.clear();
-            };
-            // A retry replaces only its own unfinished pieces. Other parallel
-            // batches keep their validated content and independent previews.
-            for (const item of items) {
-              item.original.previews[item.partIndex] = '';
-              publish(item.original);
-            }
-            const options = { key, signal, onToken: (text) => {
-              if (signal.aborted) return;
-              if (!progressive) { emit({ type:'stream', text }); return; }
-              for (const partial of parser.feed(text.slice(seen))) {
-                const item = byId.get(partial.id);
-                item.original.streamed = true;
-                item.original.previews[item.partIndex] = item.leading + item.restore(partial.text);
-                dirty.add(item.original);
-              }
-              seen = text.length;
-              if (dirty.size && !timer) timer = setTimeout(flush, 45);
-            } };
-            let translated;
-            try {
-            if (TRADITIONAL_PROTOCOLS.includes(profile.protocol))
-              translated = await traditionalTranslate(
-                profile,
-                source,
-                payload.sourceLanguage || settings.sourceLanguage,
-                payload.targetLanguage || settings.targetLanguage,
-                options,
-              );
-            else {
-              const text = await generate(
-                profile,
-                {
-                  system: translationSystem(settings, profile, payload),
-                  prompt: JSON.stringify({
-                    context: String(payload.context || '').slice(0, 12000),
-                    items: source,
-                  }),
-                },
-                options,
-              );
-              try {
-                translated = parseTranslations(text, source);
-              } catch (error) {
-                if (source.length === 1 && !/^\s*[\[{`]/.test(text))
-                  translated = [{ id: source[0].id, text }];
-                else throw error;
-              }
-            }
-            // Validate the complete batch before caching or accepting any item.
-            for (const result of translated) {
-              const item = byId.get(result.id);
-              if (!item || typeof result.text !== 'string' ||
-                  (item.text.trim() && !result.text.trim()))
-                throw new Error('翻译接口返回了空译文或无效段落');
-              validateTokens(item.text, result.text);
-            }
-            for (const result of translated) {
-              const item = byId.get(result.id);
-              const text = item.leading + item.restore(result.text).trim() + item.trailing;
-              item.original.pieces[item.partIndex] = text;
-              dirty.add(item.original);
-              if (settings.cache) await cacheSet(item.key, text).catch(() => {});
-            }
-            flush();
-            for (const item of items) publishResult(item.original);
-            completed += items.length;
-            emit({ type: 'batch', completed, total: expanded.length });
-            } catch (error) {
-              // Do not leave a failed attempt's last text visible during retry backoff.
-              for (const item of items) {
-                item.original.previews[item.partIndex] = '';
-                dirty.add(item.original);
-              }
-              flush();
-              throw error;
-            } finally { clearTimeout(timer); }
-          },
-          payload.stopOnTimeout === true,
-          { page: payload.diagnosticPage, site: payload.diagnosticSite, jobId: payload.jobId },
-        ),
-      ),
-    ),
-  );
+  const context = { page: payload.diagnosticPage, site: payload.diagnosticSite, jobId: payload.jobId };
+  const traditional = TRADITIONAL_PROTOCOLS.includes(profile.protocol);
+  const system = traditional ? '' : translationSystem(settings, profile, payload);
+  const secrets = [...keysOf(profile), ...Object.values(profile.headers || {}).filter(
+    (value) => typeof value === 'string',
+  )];
+  const diagnosticWrites = [];
+  const fail = (items, failure) => {
+    for (const item of items) {
+      const record = item.original;
+      // A terminal validation error cannot be repaired by the timeout fallback.
+      if (!record.failure || isTimeoutError(record.failure)) record.failure = failure;
+    }
+  };
+  async function requestBatch(items, key, retry) {
+    const source = items.map(({ id, text }) => ({ id, text }));
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const parser = progressive ? new TranslationStreamParser([...byId.keys()]) : null;
+    const dirty = new Set();
+    let seen = 0, timer;
+    let invalidResponse;
+    const flush = () => {
+      clearTimeout(timer);
+      timer = null;
+      for (const record of dirty) publish(record);
+      dirty.clear();
+    };
+    const options = {
+      key, signal,
+      onInvalidResponse(value) { invalidResponse = value; },
+      onToken(text) {
+        if (signal.aborted) return;
+        if (!parser) { emit({ type: 'stream', text }); return; }
+        for (const update of parser.feed(text.slice(seen))) {
+          const item = byId.get(update.id);
+          item.original.streamed = true;
+          item.original.previews[item.partIndex] = item.leading + item.restore(update.text);
+          dirty.add(item.original);
+        }
+        seen = text.length;
+        if (dirty.size && !timer) timer = setTimeout(flush, 45);
+      },
+    };
+    let raw;
+    let result;
+    try {
+      if (traditional) {
+        const rows = await traditionalTranslate(profile, source,
+          payload.sourceLanguage || settings.sourceLanguage, targetLanguage, options);
+        raw = JSON.stringify(rows);
+        result = validateTranslationItems(rows, source);
+      } else {
+        const text = await generate(profile, {
+          system,
+          prompt: JSON.stringify({
+            context: String(payload.context || '').slice(0, 12000),
+            items: source,
+          }),
+        }, { ...options, allowEmpty: true });
+        raw = invalidResponse ?? text;
+        result = parseTranslations(text, source);
+      }
+    } catch (error) {
+      if (invalidResponse === undefined || signal.aborted || isTimeoutError(error)) throw error;
+      raw = invalidResponse;
+      result = validateTranslationItems(null, source);
+    } finally {
+      clearTimeout(timer);
+      for (const item of items) {
+        item.original.previews[item.partIndex] = '';
+        dirty.add(item.original);
+      }
+      if (!result) flush();
+    }
+    signal.throwIfAborted();
+    if (result.issues.length) {
+      diagnosticWrites.push(recordDiagnostic({
+        ...context,
+        event: 'translation-validation',
+        code: 'TRANSLATION_VALIDATION',
+        action: 'translate',
+        status: result.failures.length ? (result.translations.length ? 'PARTIAL' : 'FAIL') : 'RECOVERED',
+        profileId: profile.id,
+        profileName: safeError(profile.name, settings),
+        model: profile.model ? safeError(profile.model, settings) : '',
+        retry,
+        expectedIds: source.map((item) => item.id),
+        actualIds: result.actualIds,
+        failedIds: result.failures.map((item) => item.id),
+        issues: result.issues,
+        ...translationResponseExcerpt(raw, secrets),
+      }));
+    }
+    const writes = [];
+    for (const resultItem of result.translations) {
+      const item = byId.get(resultItem.id);
+      const text = item.leading + item.restore(resultItem.text).trim() + item.trailing;
+      item.original.pieces[item.partIndex] = text;
+      if (settings.cache) writes.push(cacheSet(item.key, text).catch(() => {}));
+    }
+    flush();
+    for (const record of new Set(items.map((item) => item.original))) publishResult(record);
+    completed += result.translations.length;
+    emit({ type: 'batch', completed, total: expanded.length });
+    await Promise.all(writes);
+    return { failures: result.failures.map(({ id, reason }) => ({ item: byId.get(id), reason })), retry };
+  }
+  async function processBatch(items, usedRetries = 0) {
+    let result;
+    try {
+      result = await schedule(profile, signal, () => attempt(
+        profile, settings, signal, 'translate', (key, retry) => requestBatch(items, key, retry),
+        payload.stopOnTimeout === true, context, usedRetries,
+      ));
+    } catch (error) {
+      signal.throwIfAborted();
+      fail(items, { code: error.code, status: error.status, message: error.message });
+      return;
+    }
+    if (!result.failures.length) return;
+    if (result.retry >= profile.retries) {
+      for (const { item, reason } of result.failures) fail([item], validationFailure(reason));
+      return;
+    }
+    const next = result.retry + 1;
+    const size = next === profile.retries ? 1 : Math.max(1, Math.floor(items.length / 2));
+    await pause(Math.min(2 ** result.retry, 20) * 1000, signal);
+    const smallerBatches = [];
+    for (let offset = 0; offset < result.failures.length; offset += size)
+      smallerBatches.push(result.failures.slice(offset, offset + size).map(({ item }) => item));
+    await Promise.all(smallerBatches.map((smaller) => processBatch(smaller, next)));
+  }
+  await Promise.all(batches.map((items) => processBatch(items)));
+  await Promise.all(diagnosticWrites);
+  signal.throwIfAborted();
   if (settings.cache) trimCache(settings.cacheEntries).catch(() => {});
-  return output.map((item) => ({
-    id: item.id,
-    text: joinTranslatedParts(item.pieces, payload.targetLanguage || settings.targetLanguage),
-  }));
+  const translations = [], failures = [];
+  for (const record of output) {
+    if (record.failure) failures.push({ id: record.id, ...record.failure });
+    else translations.push({ id: record.id, text: paragraphText(record) });
+  }
+  if (partial) return { translations, failures };
+  if (failures.length) {
+    const failure = failures.find(isTimeoutError) || failures[0];
+    throw Object.assign(new Error(failure.message), { code: failure.code, status: failure.status });
+  }
+  return translations;
 }
 export function cancelJob(id, owner) {
   const job = jobs.get(id);
@@ -448,7 +507,9 @@ export async function runJob(settings, payload, owner, emit = () => {}) {
   const job = { owner, controller };
   jobs.set(id, job);
   job.promise = (async () => {
-    if (payload.kind === 'translate') return translate(settings, payload, signal, emit);
+    if (payload.kind === 'translate') return translate(settings, {
+      ...payload, jobId: id, diagnosticPage: payload.diagnosticPage || owner,
+    }, signal, emit);
     if (payload.kind === 'layout') {
       if (!settings.aiLayout) throw new Error('AI排版尚未开启');
       const profile = resolveProfile(settings, 'layout');
@@ -552,7 +613,8 @@ export async function runJob(settings, payload, owner, emit = () => {}) {
   })();
   try {
     const result = await job.promise;
-    await record('PASS');
+    await record(payload.kind === 'translate' && payload.partial === true && result.failures.length
+      ? (result.translations.length ? 'PARTIAL' : 'FAIL') : 'PASS');
     return result;
   } catch (error) {
     controller.abort(error);

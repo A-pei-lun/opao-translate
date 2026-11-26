@@ -67,6 +67,7 @@ export async function translateItems(
     domain = '',
     fallback = true,
     progressive = false,
+    partial = false,
     onPreview,
     jobId: id = jobId(),
   } = {},
@@ -83,6 +84,7 @@ export async function translateItems(
       domain,
       fallback,
       progressive,
+      partial,
       jobId: id,
     });
   } finally {

@@ -108,12 +108,12 @@ export class PageServiceRouter {
     }
     this.notify({ type: 'timeout', from: profileId, to: state.currentId });
   }
-  async probe(kind, payload, state, token) {
+  async probe(request, state, token) {
     while (!state.exhausted) {
       this.check(token);
       const profileId = state.currentId;
       try {
-        const result = await this.request(kind, { ...payload, profileId, stopOnTimeout: true });
+        const result = await request(profileId);
         this.check(token);
         state.confirmed = true;
         state.lastSuccess = profileId;
@@ -159,6 +159,34 @@ export class PageServiceRouter {
     }
     const token = { id: payload.jobId || crypto.randomUUID(), controller: new AbortController() };
     payload = { ...payload, jobId: token.id };
+    const partial = kind === 'translate' && payload.partial === true;
+    const translations = new Map();
+    const failures = new Map();
+    let pending = payload.items;
+    const finish = (timeout) => {
+      if (timeout) {
+        for (const item of pending)
+          failures.set(String(item.id), { id: String(item.id), code: timeout.code,
+            status: timeout.status, message: timeout.message });
+      }
+      return {
+        translations: payload.items.map((item) => translations.get(String(item.id))).filter(Boolean),
+        failures: payload.items.map((item) => failures.get(String(item.id))).filter(Boolean),
+      };
+    };
+    const request = async (profileId) => {
+      const result = await this.request(kind, {
+        ...payload, profileId, stopOnTimeout: true, ...(partial ? { items: pending } : {}),
+      });
+      if (!partial) return result;
+      for (const item of result.translations) translations.set(item.id, item);
+      for (const item of result.failures) if (!isTimeoutError(item)) failures.set(item.id, item);
+      const timedOut = result.failures.filter(isTimeoutError);
+      if (!timedOut.length) return finish();
+      const timedOutIds = new Set(timedOut.map((item) => item.id));
+      pending = pending.filter((item) => timedOutIds.has(String(item.id)));
+      throw Object.assign(new Error(timedOut[0].message), { code: timedOut[0].code, status: timedOut[0].status });
+    };
     this.tokens.add(token);
     try {
       while (true) {
@@ -172,7 +200,7 @@ export class PageServiceRouter {
         }
         if (state.exhausted) throw state.error;
         if (!state.confirmed) {
-          const probe = Promise.resolve().then(() => this.probe(kind, payload, state, token));
+          const probe = Promise.resolve().then(() => this.probe(request, state, token));
           state.probe = probe;
           try {
             return await waitFor(probe, token.controller.signal);
@@ -183,7 +211,7 @@ export class PageServiceRouter {
         const profileId = state.currentId;
         const revision = state.revision;
         try {
-          const result = await this.request(kind, { ...payload, profileId, stopOnTimeout: true });
+          const result = await request(profileId);
           this.check(token);
           // Late results can finish their own job but cannot move the page backwards.
           if (revision === state.revision) state.lastSuccess = profileId;
@@ -194,6 +222,11 @@ export class PageServiceRouter {
           this.advance(state, profileId, error);
         }
       }
+    } catch (error) {
+      this.check(token);
+      if (partial && isTimeoutError(error) && (translations.size || failures.size || pending !== payload.items))
+        return finish(error);
+      throw error;
     } finally {
       this.tokens.delete(token);
     }

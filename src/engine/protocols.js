@@ -190,7 +190,7 @@ export function extractText(data, protocol = 'chat') {
   if (Array.isArray(message)) return message.map((item) => item.text || '').join('');
   return '';
 }
-export async function readEventStream(response, protocol, onToken) {
+export async function readEventStream(response, protocol, onToken, onInvalidResponse) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '',
@@ -207,6 +207,7 @@ export async function readEventStream(response, protocol, onToken) {
     try {
       event = JSON.parse(data);
     } catch {
+      onInvalidResponse?.(data);
       throw new Error('接口返回了无效的流式 JSON');
     }
     if (event.error || event.type === 'error' ||
@@ -256,7 +257,7 @@ export class HttpError extends Error {
 export async function request(
   url,
   options,
-  { signal, timeout = 120, onToken, protocol, fetchImpl = fetch } = {},
+  { signal, timeout = 120, onToken, onInvalidResponse, protocol, fetchImpl = fetch } = {},
 ) {
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason);
@@ -287,12 +288,15 @@ export async function request(
       );
     }
     if (response.headers.get('Content-Type')?.includes('text/event-stream'))
-      return await readEventStream(response, protocol, onToken);
+      return await readEventStream(response, protocol, onToken, onInvalidResponse);
     const text = await response.text();
     try {
       return JSON.parse(text);
     } catch {
-      if (/^\s*</.test(text)) throw new Error('接口返回了 HTML，请检查 API 地址和网络');
+      if (/^\s*</.test(text)) {
+        onInvalidResponse?.(text);
+        throw new Error('接口返回了 HTML，请检查 API 地址和网络');
+      }
       return text;
     }
   } catch (error) {
@@ -314,7 +318,13 @@ export async function generate(profile, content, options = {}) {
     protocol: profile.protocol,
   });
   const text = extractText(response, profile.protocol);
-  if (!text.trim()) throw new Error('模型没有返回可显示的文字，请检查模型、接口协议和输出参数');
+  if (!text.trim()) {
+    if (options.allowEmpty) {
+      options.onInvalidResponse?.(typeof response === 'string' ? response : JSON.stringify(response));
+      return text;
+    }
+    throw new Error('模型没有返回可显示的文字，请检查模型、接口协议和输出参数');
+  }
   return text;
 }
 function pathValue(value, path) {
@@ -328,19 +338,23 @@ export async function traditionalTranslate(profile, items, from, to, options) {
   const headers = headersFor(profile, options.key);
   const init = { method: 'POST', headers };
   const target = to === 'zh-CN' ? 'zh' : to === 'zh-TW' ? 'zh-TW' : to;
+  function mapRows(raw, rows, getText) {
+    if (!Array.isArray(rows) || rows.length !== items.length) {
+      options.onInvalidResponse?.(typeof raw === 'string' ? raw : JSON.stringify(raw));
+      throw new Error('翻译接口返回的段落数量或格式不匹配');
+    }
+    const translated = rows.map((row, index) => ({ id: items[index].id, text: getText(row) }));
+    if (!options.onInvalidResponse && translated.some(({ text }) => typeof text !== 'string'))
+      throw new Error('翻译接口返回的译文无效');
+    return translated;
+  }
   if (profile.protocol === 'bing-free') {
     url.searchParams.set('to', to === 'zh-CN' ? 'zh-Hans' : to === 'zh-TW' ? 'zh-Hant' : to);
     if (from !== 'auto') url.searchParams.set('from', from);
     url.searchParams.set('isEnterpriseClient', 'false');
     init.body = JSON.stringify(items.map((item) => item.text));
     const data = await request(url.href, init, { ...options, timeout: profile.timeout });
-    if (
-      !Array.isArray(data) ||
-      data.length !== items.length ||
-      data.some((item) => typeof item.translations?.[0]?.text !== 'string')
-    )
-      throw new Error('Bing 网页接口返回的译文结构无效');
-    return data.map((item, index) => ({ id: items[index].id, text: item.translations[0].text }));
+    return mapRows(data, data, (item) => item?.translations?.[0]?.text);
   }
   if (profile.protocol === 'google-free') {
     url.searchParams.set('client', 'gtx');
@@ -358,13 +372,7 @@ export async function traditionalTranslate(profile, items, from, to, options) {
       },
       { ...options, timeout: profile.timeout },
     );
-    if (!Array.isArray(data) || data.length !== items.length)
-      throw new Error('Google 网页接口返回的段落数量不一致');
-    return data.map((item, index) => {
-      const text = Array.isArray(item) ? item[0] : item;
-      if (typeof text !== 'string') throw new Error('Google 网页接口返回的译文无效');
-      return { id: items[index].id, text };
-    });
+    return mapRows(data, data, (item) => Array.isArray(item) ? item[0] : item);
   }
   if (profile.protocol === 'deepl') {
     init.body = JSON.stringify({
@@ -374,8 +382,7 @@ export async function traditionalTranslate(profile, items, from, to, options) {
       ...profile.body,
     });
     const data = await request(url.href, init, { ...options, timeout: profile.timeout });
-    if (data.translations?.length !== items.length) throw new Error('翻译接口返回的段落数量不一致');
-    return data.translations.map((item, index) => ({ id: items[index].id, text: item.text }));
+    return mapRows(data, data?.translations, (item) => item?.text);
   }
   if (profile.protocol === 'microsoft') {
     url.searchParams.set('api-version', '3.0');
@@ -383,12 +390,7 @@ export async function traditionalTranslate(profile, items, from, to, options) {
     if (from !== 'auto') url.searchParams.set('from', from);
     init.body = JSON.stringify(items.map((item) => ({ Text: item.text })));
     const data = await request(url.href, init, { ...options, timeout: profile.timeout });
-    if (!Array.isArray(data) || data.length !== items.length)
-      throw new Error('Microsoft 翻译段落响应无效');
-    return data.map((item, index) => ({
-      id: items[index].id,
-      text: item.translations?.[0]?.text || '',
-    }));
+    return mapRows(data, data, (item) => item?.translations?.[0]?.text);
   }
   if (profile.protocol === 'google') {
     if (options.key) url.searchParams.set('key', options.key);
@@ -400,12 +402,7 @@ export async function traditionalTranslate(profile, items, from, to, options) {
       ...profile.body,
     });
     const data = await request(url.href, init, { ...options, timeout: profile.timeout });
-    if (data.data?.translations?.length !== items.length)
-      throw new Error('Google 翻译段落响应无效');
-    return data.data.translations.map((item, index) => ({
-      id: items[index].id,
-      text: item.translatedText,
-    }));
+    return mapRows(data, data?.data?.translations, (item) => item?.translatedText);
   }
   const results = [];
   for (const item of items) {
@@ -440,9 +437,11 @@ export async function traditionalTranslate(profile, items, from, to, options) {
     );
     const translated = profile.responsePath
       ? pathValue(data, profile.responsePath)
-      : (data.translatedText ?? data.translation ?? data.data ?? data.text);
-    if (typeof translated !== 'string')
+      : (data?.translatedText ?? data?.translation ?? data?.data ?? data?.text);
+    if (typeof translated !== 'string') {
+      options.onInvalidResponse?.(typeof data === 'string' ? data : JSON.stringify(data));
       throw new Error('自定义接口需要设置译文字段路径，例如 data.translation');
+    }
     results.push({ id: item.id, text: translated });
   }
   return results;
